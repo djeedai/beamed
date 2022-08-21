@@ -1,0 +1,24 @@
+[package]
+name = "combine"
+version = "0.1.0"
+authors = ["Jerome Humbert <djeedai@gmail.com>"]
+edition = "2021"
+description = "Bevy Jam #2 - Combine"
+repository = "https://github.com/djeedai/combine"
+homepage = "https://github.com/djeedai/combine"
+documentation = "https://docs.rs/combine"
+keywords = ["game"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+bevy = { version = "0.8", features = [ "render" ] }
+bevy_tweening = "0.5"
+bevy_hanabi = "0.3"
+bevy_keith = "0.0.2"
+leafwing-input-manager = "0.5"
+bevy_kira_audio = { version = "0.11", features = ["wav"] }
+
+serde = { version = "1", features = [ "derive" ] }
+
+bevy-inspector-egui = "0.12"
