@@ -22,7 +22,7 @@ use bevy_tweening::{lens::*, *};
 //use heron::prelude::*;
 use leafwing_input_manager::prelude::*;
 //use rand::prelude::*;
-use std::{f32::consts::PI, time::Duration};
+use std::{f32::consts::PI, time::Duration, usize};
 
 pub struct GamePlugin;
 
@@ -54,9 +54,24 @@ impl Plugin for GamePlugin {
     }
 }
 
+#[derive(Actionlike, PartialEq, Eq, Clone, Copy, Hash, Debug)]
+enum PlayerAction {
+    // Cursor
+    MoveUp,
+    MoveDown,
+    MoveLeft,
+    MoveRight,
+    PlaceSelectedItem,
+    // Inventory
+    SelectNextItem,
+    SelectPrevItem,
+}
+
 fn update_cursor(
     board_query: Query<&Board>,
-    mut cursor_query: Query<(&mut Transform, &mut Cursor)>,
+    mut cursor_query: Query<(&mut Transform, &mut Cursor), Without<InventoryCursor>>,
+    mut inventory_query: Query<&mut Inventory>,
+    mut inventory_cursor_query: Query<(&mut Transform, &mut InventoryCursor), Without<Cursor>>,
     input_query: Query<&ActionState<PlayerAction>>,
 ) {
     let board = board_query.single();
@@ -66,6 +81,7 @@ fn update_cursor(
     let (mut transform, mut cursor) = cursor_query.single_mut();
 
     let input_state = input_query.single();
+
     if input_state.just_pressed(PlayerAction::MoveLeft) {
         cursor.pos.x -= 1;
     }
@@ -84,19 +100,23 @@ fn update_cursor(
 
     transform.translation =
         (cursor.pos.as_vec2() * board.cell_size).extend(transform.translation.z);
-}
 
-#[derive(Actionlike, PartialEq, Eq, Clone, Copy, Hash, Debug)]
-enum PlayerAction {
-    // Cursor
-    MoveUp,
-    MoveDown,
-    MoveLeft,
-    MoveRight,
-    PlaceSelectedItem,
-    // Inventory
-    SelectNextItem,
-    SelectPrevItem,
+    let mut inventory = inventory_query.single_mut();
+
+    let item_changed = if input_state.just_pressed(PlayerAction::SelectPrevItem) {
+        inventory.select_prev()
+    } else if input_state.just_pressed(PlayerAction::SelectNextItem) {
+        inventory.select_next()
+    } else {
+        false
+    };
+
+    if item_changed {
+        let (mut transform, mut cursor) = inventory_cursor_query.single_mut();
+        if let Some(index) = inventory.selected_index() {
+            transform.translation.x = index as f32 * board.cell_size().x;
+        }
+    }
 }
 
 #[derive(Component)]
@@ -148,6 +168,10 @@ impl Board {
 
     pub fn size(&self) -> IVec2 {
         self.size
+    }
+
+    pub fn cell_size(&self) -> Vec2 {
+        self.cell_size
     }
 
     /// Create a quad with proper UVs.
@@ -246,6 +270,14 @@ fn game_setup(
     input_map.insert(GamepadButtonType::DPadDown, PlayerAction::MoveRight);
     input_map.insert(KeyCode::Space, PlayerAction::PlaceSelectedItem);
     input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem);
+    input_map.insert(GamepadButtonType::South, PlayerAction::PlaceSelectedItem);
+    input_map.insert(KeyCode::Q, PlayerAction::SelectPrevItem);
+    input_map.insert(GamepadButtonType::LeftTrigger, PlayerAction::SelectPrevItem);
+    input_map.insert(KeyCode::E, PlayerAction::SelectNextItem);
+    input_map.insert(
+        GamepadButtonType::RightTrigger,
+        PlayerAction::SelectNextItem,
+    );
     #[cfg(not(debug_assertions))] // only in release, otherwise annoying with egui inspector
     input_map.insert(MouseButton::Left, PlayerAction::PlaceSelectedItem);
 
@@ -257,7 +289,7 @@ fn game_setup(
                 custom_size: Some(Vec2::splat(32.)),
                 ..default()
             },
-            texture: cursor_image,
+            texture: cursor_image.clone(),
             ..default()
         })
         .insert(Cursor::default())
@@ -274,6 +306,61 @@ fn game_setup(
         .push((grid_image.clone(), AddressMode::Repeat, AddressMode::Repeat));
     let size = IVec2::new(7, 7);
     let board = Board::new(size);
+
+    // Inventory
+    let item0 = asset_server.load("textures/halver.png");
+    let item1 = asset_server.load("textures/inverter.png");
+    let item2 = asset_server.load("textures/into_red.png");
+    let mut inventory = Inventory::default();
+    inventory.set_slot_count(3);
+    inventory.set_slot(0, item0.clone());
+    inventory.set_slot(1, item1.clone());
+    inventory.set_slot(2, item2.clone());
+    let mut children = vec![];
+    let slot_count = inventory.slots().len();
+    let offset = (IVec2::new(-(slot_count as i32) / 2, -(size.y as i32) / 2 - 2).as_vec2()
+        * board.cell_size())
+    .extend(0.);
+    for (i, item) in inventory.slots().iter().enumerate() {
+        let pos = Vec3::new(i as f32 * board.cell_size().x, 0., 0.);
+        children.push(
+            commands
+                .spawn_bundle(SpriteBundle {
+                    transform: Transform::from_translation(pos),
+                    sprite: Sprite {
+                        custom_size: Some(Vec2::splat(32.)),
+                        ..default()
+                    },
+                    texture: item.image.clone(),
+                    ..default()
+                })
+                .insert(Name::new(format!("slot#{}", i)))
+                .id(),
+        );
+    }
+    children.push(
+        commands
+            .spawn_bundle(SpriteBundle {
+                sprite: Sprite {
+                    custom_size: Some(Vec2::splat(32.)),
+                    ..default()
+                },
+                texture: cursor_image.clone(),
+                ..default()
+            })
+            .insert(InventoryCursor)
+            .id(),
+    );
+    commands
+        .spawn_bundle(SpatialBundle {
+            transform: Transform::from_translation(offset),
+            ..default()
+        }) // needed for children to be visible
+        .insert(inventory)
+        .insert(Name::new("inventory"))
+        .push_children(&children[..]);
+
+    // Board
     let mesh = board.create_grid_mesh();
     let mesh: Mesh2dHandle = meshes.add(mesh).into();
     commands
@@ -312,3 +399,93 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
         }
     }
 }
+
+#[derive(Default, PartialEq)]
+struct Item {
+    image: Handle<Image>,
+}
+
+#[derive(Component, Default)]
+struct Inventory {
+    items: Vec<Item>,
+    selected_index: usize,
+}
+
+impl Inventory {
+    pub fn set_slot_count(&mut self, count: usize) {
+        self.items.resize_with(count, Item::default);
+        self.selected_index = self.selected_index.min(count - 1);
+    }
+
+    pub fn set_slot(&mut self, slot_index: usize, image: Handle<Image>) {
+        if slot_index < self.items.len() {
+            self.items[slot_index].image = image;
+        }
+    }
+
+    pub fn slots(&self) -> &[Item] {
+        &self.items
+    }
+
+    pub fn select(&mut self, slot_index: usize) -> bool {
+        let count = self.items.len();
+        if slot_index >= count {
+            false
+        } else if self.selected_index != slot_index {
+            self.selected_index = slot_index;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn select_prev(&mut self) -> bool {
+        let count = self.items.len();
+        if count == 0 {
+            false
+        } else {
+            let prev = (self.selected_index + count - 1) % count;
+            if self.selected_index != prev {
+                self.selected_index = prev;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn select_next(&mut self) -> bool {
+        let count = self.items.len();
+        if count == 0 {
+            false
+        } else {
+            let next = (self.selected_index + 1) % count;
+            if self.selected_index != next {
+                self.selected_index = next;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn selected(&self) -> Option<&Item> {
+        if self.selected_index < self.items.len() {
+            Some(&self.items[self.selected_index])
+        } else {
+            None
+        }
+    }
+
+    pub fn selected_index(&self) -> Option<usize> {
+        if self.selected_index < self.items.len() {
+            Some(self.selected_index)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Component, Default, Debug, Reflect)]
+#[reflect(Component)]
+struct InventoryCursor;
