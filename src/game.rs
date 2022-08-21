@@ -69,10 +69,12 @@ enum PlayerAction {
 
 fn update_cursor(
     board_query: Query<&Board>,
+    input_query: Query<&ActionState<PlayerAction>>,
     mut cursor_query: Query<(&mut Transform, &mut Cursor), Without<InventoryCursor>>,
     mut inventory_query: Query<&mut Inventory>,
     mut inventory_cursor_query: Query<(&mut Transform, &mut InventoryCursor), Without<Cursor>>,
-    input_query: Query<&ActionState<PlayerAction>>,
+    mut cell_query: Query<(&mut Cell, &mut Handle<Image>), Without<Slot>>,
+    mut slot_query: Query<(&mut Slot, &mut Handle<Image>), Without<Cell>>,
 ) {
     let board = board_query.single();
     let size = board.size();
@@ -117,6 +119,49 @@ fn update_cursor(
             transform.translation.x = index as f32 * board.cell_size().x;
         }
     }
+
+    if input_state.just_pressed(PlayerAction::PlaceSelectedItem) {
+        trace!("Place item...");
+        // Get the cell under the cursor, where the new item goes
+        let cell_entity = board.cell_at(cursor.pos);
+        if let Ok((mut cell, mut cell_image)) = cell_query.get_mut(cell_entity) {
+            // Check the cell is empty (don't overwrite!)
+            if cell.item.is_none() {
+                // Get the selected inventory slot entity
+                if let Some(slot_entity) = inventory.selected() {
+                    // Get the actual Slot component for that entity, and its image
+                    if let Ok((mut slot, mut slot_image)) = slot_query.get_mut(slot_entity) {
+                        // Try to take 1 item from that slot
+                        if let Some(item) = slot.try_take(1) {
+                            // Success! Place item on board in cell
+                            *cell_image = item.image.clone();
+                            cell.item = Some(item);
+                            // If slot is emtpy, clear its image
+                            if slot.is_emtpy() {
+                                *slot_image = inventory.empty_slot_image().clone();
+                            }
+                        } else {
+                            debug!(
+                                "Slot #{} has no more item.",
+                                inventory.selected_index().unwrap_or(0)
+                            );
+                        }
+                    } else {
+                        warn!("Failed to find Slot component at Entity {:?}.", slot_entity);
+                    }
+                } else {
+                    debug!("No slot selected in inventory, cannot place item.");
+                }
+            } else {
+                debug!(
+                    "Cell at cursor pos {:?} already contains an item, cannot place another one.",
+                    cursor.pos
+                );
+            }
+        } else {
+            warn!("Failed to find cell at cursor pos {:?}", cursor.pos);
+        }
+    }
 }
 
 #[derive(Component)]
@@ -152,64 +197,123 @@ struct Cursor {
     pos: IVec2,
 }
 
+#[derive(Component, Debug, Default, Clone)]
+struct Cell {
+    ipos: IVec2,
+    item: Option<Item>,
+}
+
+impl Cell {
+    pub fn new(ipos: IVec2) -> Self {
+        Self { ipos, item: None }
+    }
+}
+
 #[derive(Component, Debug)]
 struct Board {
     size: IVec2,
     cell_size: Vec2,
+    cells: Vec<Entity>,
 }
 
 impl Board {
     pub fn new(size: IVec2) -> Self {
+        let count = size.x as usize * size.y as usize;
         Self {
             size,
             cell_size: Vec2::splat(32.),
+            cells: vec![],
         }
     }
 
+    pub fn set_cells(&mut self, cells: Vec<Entity>) {
+        assert_eq!(self.size.x as usize * self.size.y as usize, cells.len());
+        self.cells = cells;
+    }
+
+    /// Iterator over all the positions of the cells on the grid.
+    ///
+    /// The iterators yields cell positions by row.
+    pub fn grid_iter(&self) -> impl Iterator<Item = IVec2> {
+        let r = self.rect();
+        (r.0.y..r.1.y)
+            .flat_map(move |j| (r.0.x..r.1.x).map(move |i| (i, j)))
+            .map(|(i, j)| IVec2::new(i, j))
+    }
+
+    #[inline]
     pub fn size(&self) -> IVec2 {
         self.size
     }
 
+    #[inline]
+    pub fn rect(&self) -> (IVec2, IVec2) {
+        // FIXME - works only on odd size...
+        let half_size = (self.size + 1) / 2;
+        (-half_size + 1, half_size)
+    }
+
+    #[inline]
     pub fn cell_size(&self) -> Vec2 {
         self.cell_size
     }
 
-    /// Create a quad with proper UVs.
-    fn create_grid_mesh(&self) -> Mesh {
-        let half_size = (self.size - 1) / 2;
-        let min = -half_size;
-        let max = half_size + 1;
+    /// Get the center of the cell located at the specified board position.
+    #[inline]
+    pub fn to_world(&self, ipos: IVec2) -> Vec2 {
+        (ipos.as_vec2() * self.cell_size) - Vec2::splat(0.5)
+    }
 
-        let offset = Vec2::splat(0.5);
-        let vertices = vec![
-            ((IVec2::new(min.x, min.y).as_vec2() - offset) * self.cell_size)
-                .extend(0.)
-                .to_array(),
-            ((IVec2::new(max.x, min.y).as_vec2() - offset) * self.cell_size)
-                .extend(0.)
-                .to_array(),
-            ((IVec2::new(min.x, max.y).as_vec2() - offset) * self.cell_size)
-                .extend(0.)
-                .to_array(),
-            ((IVec2::new(max.x, max.y).as_vec2() - offset) * self.cell_size)
-                .extend(0.)
-                .to_array(),
-        ];
-        let normals = [[0.; 3]; 4].to_vec();
-        let indices = vec![0, 1, 2, 2, 1, 3];
-        let uvs = vec![
-            IVec2::new(min.x, min.y).as_vec2().to_array(),
-            IVec2::new(max.x, min.y).as_vec2().to_array(),
-            IVec2::new(min.x, max.y).as_vec2().to_array(),
-            IVec2::new(max.x, max.y).as_vec2().to_array(),
-        ];
+    /// Get the board cell position corresponding to a world location.
+    ///
+    /// If the input position lies outside the board, returns `None`.
+    pub fn to_board(&self, pos: Vec2) -> Option<IVec2> {
+        let pos = (pos + Vec2::splat(0.5)) / self.cell_size;
+        let ipos = pos.as_ivec2();
+        let r = self.rect();
+        if ipos.x >= r.0.x && ipos.x <= r.1.x && ipos.y >= r.0.y && ipos.y <= r.1.y {
+            Some(ipos)
+        } else {
+            None
+        }
+    }
 
-        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, VertexAttributeValues::Float32x2(uvs));
-        mesh.set_indices(Some(Indices::U32(indices)));
-        mesh
+    /// Get the board cell position corresponding to a world location.
+    ///
+    /// If the input position lies outside the board, returns the position of the closest cell.
+    pub fn to_board_clamped(&self, pos: Vec2) -> IVec2 {
+        let pos = (pos + Vec2::splat(0.5)) / self.cell_size;
+        let ipos = pos.as_ivec2();
+        let r = self.rect();
+        ipos.clamp(r.0, r.1)
+    }
+
+    #[inline]
+    pub fn cells(&self) -> &[Entity] {
+        &self.cells
+    }
+
+    pub fn try_cell_at(&self, ipos: IVec2) -> Option<Entity> {
+        let r = self.rect();
+        if ipos.x >= r.0.x && ipos.x <= r.1.x && ipos.y >= r.0.y && ipos.y <= r.1.y {
+            let index = (ipos.y - r.0.y) * self.size.x + (ipos.x - r.0.x);
+            Some(self.cells[index as usize])
+        } else {
+            None
+        }
+    }
+
+    pub fn cell_at(&self, ipos: IVec2) -> Entity {
+        let min = self.rect().0;
+        let index = (ipos.y - min.y) * self.size.x + (ipos.x - min.x);
+        trace!(
+            "ipos={:?} min={:?} size={:?} index={}",
+            ipos,
+            min,
+            self.size,
+            index
+        );
+        self.cells[index as usize]
     }
 }
 
@@ -305,24 +409,44 @@ fn game_setup(
         .images
         .push((grid_image.clone(), AddressMode::Repeat, AddressMode::Repeat));
     let size = IVec2::new(7, 7);
-    let board = Board::new(size);
+    let mut board = Board::new(size);
 
     // Inventory
     let item0 = asset_server.load("textures/halver.png");
     let item1 = asset_server.load("textures/inverter.png");
     let item2 = asset_server.load("textures/into_red.png");
-    let mut inventory = Inventory::default();
-    inventory.set_slot_count(3);
-    inventory.set_slot(0, item0.clone());
-    inventory.set_slot(1, item1.clone());
-    inventory.set_slot(2, item2.clone());
     let mut children = vec![];
-    let slot_count = inventory.slots().len();
-    let offset = (IVec2::new(-(slot_count as i32) / 2, -(size.y as i32) / 2 - 2).as_vec2()
-        * board.cell_size())
-    .extend(0.);
-    for (i, item) in inventory.slots().iter().enumerate() {
-        let pos = Vec3::new(i as f32 * board.cell_size().x, 0., 0.);
+    for (index, (maybe_item, count)) in [
+        (
+            Some(Item {
+                image: item0.clone(),
+            }),
+            3,
+        ),
+        (
+            Some(Item {
+                image: item1.clone(),
+            }),
+            1,
+        ),
+        (None, 0),
+        (
+            Some(Item {
+                image: item2.clone(),
+            }),
+            2,
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let count = if maybe_item.is_none() { 0 } else { *count };
+        let pos = Vec3::new(index as f32 * board.cell_size().x, 0., 0.);
+        let texture = if let Some(item) = maybe_item {
+            item.image.clone()
+        } else {
+            grid_image.clone()
+        };
         children.push(
             commands
                 .spawn_bundle(SpriteBundle {
@@ -331,13 +455,23 @@ fn game_setup(
                         custom_size: Some(Vec2::splat(32.)),
                         ..default()
                     },
-                    texture: item.image.clone(),
+                    texture,
                     ..default()
                 })
-                .insert(Name::new(format!("slot#{}", i)))
+                .insert(Slot {
+                    item: maybe_item.clone(),
+                    count,
+                })
+                .insert(Name::new(format!("slot#{}", index)))
                 .id(),
         );
     }
+    let mut inventory = Inventory::new(grid_image.clone());
+    inventory.set_slots(children.clone());
+    let slot_count = inventory.slots().len();
+    let offset = (Vec2::new(-(slot_count as f32) / 2. + 0.5, -(size.y as f32) / 2. - 3.)
+        * board.cell_size())
+    .extend(0.);
     children.push(
         commands
             .spawn_bundle(SpriteBundle {
@@ -361,19 +495,30 @@ fn game_setup(
         .push_children(&children[..]);
 
     // Board
-    let mesh = board.create_grid_mesh();
-    let mesh: Mesh2dHandle = meshes.add(mesh).into();
+    let mut children = vec![];
+    for ipos in board.grid_iter() {
+        let pos = board.to_world(ipos).extend(0.);
+        let cell = commands
+            .spawn_bundle(SpriteBundle {
+                sprite: Sprite {
+                    custom_size: Some(Vec2::splat(32.)),
+                    ..default()
+                },
+                texture: grid_image.clone(),
+                transform: Transform::from_translation(pos),
+                ..default()
+            })
+            .insert(Cell::new(ipos))
+            .insert(Name::new(format!("cell({},{})", ipos.x, ipos.y)))
+            .id();
+        children.push(cell);
+    }
+    board.set_cells(children.clone());
     commands
-        .spawn_bundle(ColorMesh2dBundle {
-            mesh,
-            material: materials.add(ColorMaterial {
-                color: Color::WHITE,
-                texture: Some(grid_image),
-            }),
-            ..default()
-        })
+        .spawn_bundle(SpatialBundle::default())
         .insert(board)
-        .insert(Name::new("board"));
+        .insert(Name::new("board"))
+        .push_children(&children[..]);
 }
 
 #[derive(Default)]
@@ -400,35 +545,63 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
     }
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 struct Item {
     image: Handle<Image>,
 }
 
+#[derive(Component, Default, Debug)]
+struct Slot {
+    item: Option<Item>,
+    count: usize,
+}
+
+impl Slot {
+    pub fn try_take(&mut self, count: usize) -> Option<Item> {
+        if count <= self.count {
+            self.count -= count;
+            self.item.clone()
+        } else {
+            None
+        }
+    }
+
+    pub fn is_emtpy(&self) -> bool {
+        self.count == 0
+    }
+}
+
 #[derive(Component, Default)]
 struct Inventory {
-    items: Vec<Item>,
+    empty_slot_image: Handle<Image>,
+    slots: Vec<Entity>,
     selected_index: usize,
 }
 
 impl Inventory {
-    pub fn set_slot_count(&mut self, count: usize) {
-        self.items.resize_with(count, Item::default);
-        self.selected_index = self.selected_index.min(count - 1);
-    }
-
-    pub fn set_slot(&mut self, slot_index: usize, image: Handle<Image>) {
-        if slot_index < self.items.len() {
-            self.items[slot_index].image = image;
+    pub fn new(empty_slot_image: Handle<Image>) -> Self {
+        Self {
+            empty_slot_image,
+            ..default()
         }
     }
 
-    pub fn slots(&self) -> &[Item] {
-        &self.items
+    pub fn empty_slot_image(&self) -> &Handle<Image> {
+        &self.empty_slot_image
+    }
+
+    pub fn set_slots(&mut self, slots: Vec<Entity>) {
+        self.slots = slots;
+        let count = self.slots.len();
+        self.selected_index = self.selected_index.min(count - 1);
+    }
+
+    pub fn slots(&self) -> &[Entity] {
+        &self.slots
     }
 
     pub fn select(&mut self, slot_index: usize) -> bool {
-        let count = self.items.len();
+        let count = self.slots.len();
         if slot_index >= count {
             false
         } else if self.selected_index != slot_index {
@@ -440,7 +613,7 @@ impl Inventory {
     }
 
     pub fn select_prev(&mut self) -> bool {
-        let count = self.items.len();
+        let count = self.slots.len();
         if count == 0 {
             false
         } else {
@@ -455,7 +628,7 @@ impl Inventory {
     }
 
     pub fn select_next(&mut self) -> bool {
-        let count = self.items.len();
+        let count = self.slots.len();
         if count == 0 {
             false
         } else {
@@ -469,16 +642,16 @@ impl Inventory {
         }
     }
 
-    pub fn selected(&self) -> Option<&Item> {
-        if self.selected_index < self.items.len() {
-            Some(&self.items[self.selected_index])
+    pub fn selected(&self) -> Option<Entity> {
+        if self.selected_index < self.slots.len() {
+            Some(self.slots[self.selected_index])
         } else {
             None
         }
     }
 
     pub fn selected_index(&self) -> Option<usize> {
-        if self.selected_index < self.items.len() {
+        if self.selected_index < self.slots.len() {
             Some(self.selected_index)
         } else {
             None
