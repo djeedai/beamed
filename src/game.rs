@@ -33,6 +33,7 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugin(Material2dPlugin::<BeamMaterial>::default())
             .add_event::<ScoreEvent>()
+            .add_event::<PlaceItemEvent>()
             .register_type::<Cursor>()
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
@@ -52,7 +53,9 @@ impl Plugin for GamePlugin {
             )
             .add_system_set_to_stage(
                 CoreStage::Update,
-                SystemSet::on_update(AppState::InGame).with_system(update_cursor),
+                SystemSet::on_update(AppState::InGame)
+                    .with_system(update_cursor)
+                    .with_system(update_board.after(update_cursor)),
             );
     }
 }
@@ -72,6 +75,13 @@ enum PlayerAction {
     SelectPrevItem,
 }
 
+#[derive(Debug)]
+struct PlaceItemEvent {
+    item_id: ItemId,
+    ipos: IVec2,
+    orient: Orient,
+}
+
 fn update_cursor(
     board_query: Query<&Board>,
     input_query: Query<&ActionState<PlayerAction>>,
@@ -84,12 +94,10 @@ fn update_cursor(
         (&mut Transform, &mut InventoryCursor),
         (Without<Cursor>, Without<Cell>),
     >,
-    mut cell_query: Query<
-        (&mut Cell, &mut Handle<Image>, &mut Transform),
-        (Without<Slot>, Without<Cursor>, Without<InventoryCursor>),
-    >,
+    cell_query: Query<&Cell>,
     mut slot_query: Query<(&mut Slot, &mut Handle<Image>), Without<Cell>>,
     database: Res<ItemDatabase>,
+    mut place_item_event_writer: EventWriter<PlaceItemEvent>,
     //
     mut meshes: ResMut<Assets<Mesh>>,
     mut beam_materials: ResMut<Assets<BeamMaterial>>,
@@ -152,8 +160,7 @@ fn update_cursor(
         trace!("Place item...");
         // Get the cell under the cursor, where the new item goes
         let cell_entity = board.cell_at(cursor.pos);
-        if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity)
-        {
+        if let Ok(cell) = cell_query.get(cell_entity) {
             // Check the cell is empty (don't overwrite!)
             if cell.item.is_none() {
                 // Get the selected inventory slot entity
@@ -162,29 +169,30 @@ fn update_cursor(
                     if let Ok((mut slot, mut slot_image)) = slot_query.get_mut(slot_entity) {
                         // Try to take 1 item from that slot
                         if let Some(item_id) = slot.try_take(1) {
-                            // Try to find item in database
-                            let item = database.get(item_id).unwrap();
-                            // Success! Place item on board in cell
-                            *cell_image = item.image.clone();
-                            cell_transform.rotation = cursor.orient.into();
-                            cell.item = Some(item_id);
+                            // Send event to board to place a new item
+                            place_item_event_writer.send(PlaceItemEvent {
+                                item_id,
+                                ipos: cursor.pos,
+                                orient: cursor.orient,
+                            });
+
                             // If slot is emtpy, clear its image
                             if slot.is_emtpy() {
                                 *slot_image = inventory.empty_slot_image().clone();
                             }
 
-                            let mesh: Mesh2dHandle = meshes
-                                .add(shape::Quad::new(Vec2::new(140., 4.)).into())
-                                .into();
-                            commands.spawn_bundle(MaterialMesh2dBundle {
-                                mesh,
-                                material: beam_materials.add(BeamMaterial {
-                                    color: Color::PURPLE,
-                                    pattern: 0xAAF0,
-                                }),
-                                //material: color_materials.add(Color::PURPLE.into()),
-                                ..default()
-                            });
+                            // let mesh: Mesh2dHandle = meshes
+                            //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
+                            //     .into();
+                            // commands.spawn_bundle(MaterialMesh2dBundle {
+                            //     mesh,
+                            //     material: beam_materials.add(BeamMaterial {
+                            //         color: Color::PURPLE,
+                            //         pattern: 0xAAF0,
+                            //     }),
+                            //     //material: color_materials.add(Color::PURPLE.into()),
+                            //     ..default()
+                            // });
                         } else {
                             debug!(
                                 "Slot #{} has no more item.",
@@ -199,12 +207,48 @@ fn update_cursor(
                 }
             } else {
                 debug!(
-                    "Cell at cursor pos {:?} already contains an item, cannot place another one.",
+                    "Cell at pos {:?} already contains an item, cannot place another one.",
                     cursor.pos
                 );
             }
         } else {
-            warn!("Failed to find cell at cursor pos {:?}", cursor.pos);
+            warn!("Failed to find cell at pos {:?}", cursor.pos);
+        }
+    }
+}
+
+fn update_board(
+    database: Res<ItemDatabase>,
+    board_query: Query<&Board>,
+    mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform)>,
+    mut place_item_event_reader: EventReader<PlaceItemEvent>,
+) {
+    let board = board_query.single();
+    let size = board.size();
+    let half_size = (size - 1) / 2;
+
+    // Place new items on board
+    for ev in place_item_event_reader.iter() {
+        // Get the cell under the cursor, where the new item goes
+        let cell_entity = board.cell_at(ev.ipos);
+        if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity)
+        {
+            // Check the cell is empty (don't overwrite!)
+            if cell.item.is_none() {
+                // Try to find item in database
+                let item = database.get(ev.item_id).unwrap();
+                // Success! Place item on board in cell
+                *cell_image = item.image.clone();
+                cell_transform.rotation = ev.orient.into();
+                cell.item = Some(ev.item_id);
+            } else {
+                debug!(
+                    "Cell at pos {:?} already contains an item, cannot place another one.",
+                    ev.ipos
+                );
+            }
+        } else {
+            warn!("Failed to find cell at pos {:?}", ev.ipos);
         }
     }
 }
@@ -271,7 +315,7 @@ impl Cursor {
         if dir < 0 {
             self.orient.turn_right();
         } else if dir > 0 {
-        self.orient.turn_left();
+            self.orient.turn_left();
         }
         let lens = TransformRotationLens {
             start,
