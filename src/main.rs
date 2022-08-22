@@ -15,10 +15,12 @@ use bevy_inspector_egui::WorldInspectorPlugin;
 mod debug;
 mod game;
 mod menu;
+mod render;
 
 use debug::DebugPlugin;
 use game::{GamePlugin, SfxAudio};
 use menu::MenuPlugin;
+use render::BeamMaterial;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppState {

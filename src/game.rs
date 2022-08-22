@@ -10,7 +10,7 @@ use bevy::{
         render_resource::{AddressMode, SamplerDescriptor},
         texture::ImageSampler,
     },
-    sprite::Mesh2dHandle,
+    sprite::{Material2dPlugin, MaterialMesh2dBundle, Mesh2dHandle},
     window::WindowId,
 };
 //use bevy_atmosphere::*;
@@ -26,11 +26,12 @@ use std::{f32::consts::PI, time::Duration, usize};
 
 pub struct GamePlugin;
 
-use crate::{menu::AudioManager, AppState};
+use crate::{menu::AudioManager, render::BeamMaterial, AppState};
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<ScoreEvent>()
+        app.add_plugin(Material2dPlugin::<BeamMaterial>::default())
+            .add_event::<ScoreEvent>()
             .register_type::<Cursor>()
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
@@ -415,6 +416,7 @@ fn game_setup(
     let item0 = asset_server.load("textures/halver.png");
     let item1 = asset_server.load("textures/inverter.png");
     let item2 = asset_server.load("textures/into_red.png");
+    let item3 = asset_server.load("textures/emit.png");
     let mut children = vec![];
     for (index, (maybe_item, count)) in [
         (
@@ -435,6 +437,12 @@ fn game_setup(
                 image: item2.clone(),
             }),
             2,
+        ),
+        (
+            Some(Item {
+                image: item3.clone(),
+            }),
+            1,
         ),
     ]
     .iter()
@@ -515,7 +523,7 @@ fn game_setup(
     }
     board.set_cells(children.clone());
     commands
-        .spawn_bundle(SpatialBundle::default())
+        .spawn_bundle(SpatialBundle::default()) // needed for children to be visible
         .insert(board)
         .insert(Name::new("board"))
         .push_children(&children[..]);
@@ -545,7 +553,7 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug, Clone)]
 struct Item {
     image: Handle<Image>,
 }
@@ -662,3 +670,67 @@ impl Inventory {
 #[derive(Component, Default, Debug, Reflect)]
 #[reflect(Component)]
 struct InventoryCursor;
+
+enum BitColor {
+    White = 0,
+    Red,
+    Green,
+    Blue,
+}
+
+impl BitColor {
+    #[inline]
+    pub fn raw(&self) -> u8 {
+        match &self {
+            BitColor::White => 0,
+            BitColor::Red => 1,
+            BitColor::Green => 2,
+            BitColor::Blue => 3,
+        }
+    }
+}
+
+impl From<BitColor> for Color {
+    fn from(bc: BitColor) -> Color {
+        match bc {
+            BitColor::White => Color::WHITE,
+            BitColor::Red => Color::RED,
+            BitColor::Green => Color::GREEN,
+            BitColor::Blue => Color::BLUE,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct Bit {
+    value: u8,
+}
+
+impl Bit {
+    #[inline]
+    pub fn color(&self) -> u8 {
+        self.value & 0xF
+    }
+
+    #[inline]
+    pub fn set_color(&mut self, color: BitColor) {
+        self.value |= color.raw();
+    }
+
+    #[inline]
+    pub fn thickness(&self) -> u8 {
+        (self.value & 0xF) >> 4
+    }
+
+    #[inline]
+    pub fn set_thickness(&mut self, thickness: u8) {
+        self.value |= (thickness & 0xF) << 4;
+    }
+}
+
+#[derive(Component, Default, Debug)]
+struct Emitter {
+    pattern: [Bit; 16],
+}
+
+impl Emitter {}
