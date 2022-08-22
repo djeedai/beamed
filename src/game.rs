@@ -219,11 +219,11 @@ fn update_cursor(
 
 fn update_board(
     database: Res<ItemDatabase>,
-    board_query: Query<&Board>,
+    mut board_query: Query<&mut Board>,
     mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform)>,
     mut place_item_event_reader: EventReader<PlaceItemEvent>,
 ) {
-    let board = board_query.single();
+    let mut board = board_query.single_mut();
     let size = board.size();
     let half_size = (size - 1) / 2;
 
@@ -235,12 +235,13 @@ fn update_board(
         {
             // Check the cell is empty (don't overwrite!)
             if cell.item.is_none() {
-                // Try to find item in database
-                let item = database.get(ev.item_id).unwrap();
                 // Success! Place item on board in cell
+                let item = database.get(ev.item_id);
                 *cell_image = item.image.clone();
                 cell_transform.rotation = ev.orient.into();
                 cell.item = Some(ev.item_id);
+                // Update board
+                board.add(item);
             } else {
                 debug!(
                     "Cell at pos {:?} already contains an item, cannot place another one.",
@@ -498,6 +499,9 @@ impl Board {
         );
         self.cells[index as usize]
     }
+
+    /// Add a new instance of the given item onto the board.
+    pub fn add(&mut self, item: &Item) {}
 }
 
 #[derive(Component)]
@@ -535,15 +539,49 @@ fn game_setup(
     //audio_res.sound_move_cursor = asset_server.load("sounds/move_cursor.ogg");
 
     // Populate item database
-    for (id, name) in &[
-        ("halver", "Halver"),
-        ("inverter", "Inverter"),
-        ("into_red", "Converter"),
-        ("emit", "Emitter"),
+    for (id, name, inputs, outputs) in [
+        (
+            "halver",
+            "Halver",
+            vec![InputPort {
+                orient: Orient::Bottom, // TODO - any! (pass-through)
+            }],
+            vec![OutputPort {
+                orient: Orient::Top, // TODO - any! (pass-through)
+            }],
+        ),
+        (
+            "inverter",
+            "Inverter",
+            vec![InputPort {
+                orient: Orient::Bottom, // TODO - any! (pass-through)
+            }],
+            vec![OutputPort {
+                orient: Orient::Top, // TODO - any! (pass-through)
+            }],
+        ),
+        (
+            "into_red",
+            "Filter",
+            vec![InputPort {
+                orient: Orient::Bottom, // TODO - any! (pass-through)
+            }],
+            vec![OutputPort {
+                orient: Orient::Top, // TODO - any! (pass-through)
+            }],
+        ),
+        (
+            "emit",
+            "Emitter",
+            vec![],
+            vec![OutputPort {
+                orient: Orient::Top, // TODO : also, multi_emit in all 4 directions (for different challenge)
+            }],
+        ),
     ] {
         let path = format!("textures/{}.png", id);
         let image = asset_server.load(&path);
-        database.add(name, image);
+        database.add(name, image, inputs, outputs);
     }
 
     // Main camera
@@ -630,7 +668,7 @@ fn game_setup(
         let count = if maybe_item.is_none() { 0 } else { *count };
         let pos = Vec3::new(index as f32 * board.cell_size().x, 0., 0.);
         let texture = if let Some(item_id) = maybe_item {
-            database.get(*item_id).unwrap().image.clone()
+            database.get(*item_id).image.clone()
         } else {
             grid_image.clone()
         };
@@ -732,10 +770,27 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
     }
 }
 
+trait Gate {
+    fn tick(&mut self);
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct InputPort {
+    orient: Orient,
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct OutputPort {
+    orient: Orient,
+}
+
 #[derive(Default, Debug)]
 struct Item {
     name: String,
     image: Handle<Image>,
+    inputs: Vec<InputPort>,
+    outputs: Vec<OutputPort>,
+    //gate: Box<dyn Gate>,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -747,14 +802,29 @@ struct ItemDatabase {
 }
 
 impl ItemDatabase {
-    pub fn add(&mut self, name: &str, image: Handle<Image>) {
+    pub fn add(
+        &mut self,
+        name: &str,
+        image: Handle<Image>,
+        inputs: Vec<InputPort>,
+        outputs: Vec<OutputPort>,
+    ) -> ItemId {
+        let id = ItemId(self.items.len() as u32);
         self.items.push(Item {
             name: name.to_string(),
             image,
+            inputs,
+            outputs,
         });
+        id
     }
 
-    pub fn get(&self, id: ItemId) -> Option<&Item> {
+    pub fn get(&self, id: ItemId) -> &Item {
+        let index = id.0 as usize;
+        &self.items[index]
+    }
+
+    pub fn try_get(&self, id: ItemId) -> Option<&Item> {
         let index = id.0 as usize;
         if index < self.items.len() {
             Some(&self.items[index])
