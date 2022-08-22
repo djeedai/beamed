@@ -1,6 +1,7 @@
 use bevy::{
     app::CoreStage,
     asset::{AssetStage, LoadState},
+    ecs::system::Resource,
     gltf::{Gltf, GltfMesh},
     input::gamepad::GamepadButtonType,
     pbr::{NotShadowCaster, NotShadowReceiver},
@@ -35,6 +36,7 @@ impl Plugin for GamePlugin {
             .register_type::<Cursor>()
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
+            .init_resource::<ItemDatabase>()
             // .add_plugin(bevy_atmosphere::AtmospherePlugin {
             //     dynamic: true,
             //     ..default()
@@ -62,6 +64,8 @@ enum PlayerAction {
     MoveDown,
     MoveLeft,
     MoveRight,
+    TurnItemLeft,
+    TurnItemRight,
     PlaceSelectedItem,
     // Inventory
     SelectNextItem,
@@ -71,11 +75,17 @@ enum PlayerAction {
 fn update_cursor(
     board_query: Query<&Board>,
     input_query: Query<&ActionState<PlayerAction>>,
-    mut cursor_query: Query<(&mut Transform, &mut Cursor), Without<InventoryCursor>>,
+    mut cursor_query: Query<(&mut Transform, &mut Cursor), (Without<InventoryCursor>, Without<Cell>)>,
     mut inventory_query: Query<&mut Inventory>,
-    mut inventory_cursor_query: Query<(&mut Transform, &mut InventoryCursor), Without<Cursor>>,
-    mut cell_query: Query<(&mut Cell, &mut Handle<Image>), Without<Slot>>,
+    mut inventory_cursor_query: Query<(&mut Transform, &mut InventoryCursor), (Without<Cursor>, Without<Cell>)>,
+    mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform), (Without<Slot>, Without<Cursor>, Without<InventoryCursor>)>,
     mut slot_query: Query<(&mut Slot, &mut Handle<Image>), Without<Cell>>,
+    database: Res<ItemDatabase>,
+    //
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut beam_materials: ResMut<Assets<BeamMaterial>>,
+    mut color_materials: ResMut<Assets<ColorMaterial>>,
+    mut commands: Commands,
 ) {
     let board = board_query.single();
     let size = board.size();
@@ -96,6 +106,12 @@ fn update_cursor(
     }
     if input_state.just_pressed(PlayerAction::MoveUp) {
         cursor.pos.y += 1;
+    }
+    if input_state.just_pressed(PlayerAction::TurnItemLeft) {
+        cursor.orient.turn_left();
+    }
+    if input_state.just_pressed(PlayerAction::TurnItemRight) {
+        cursor.orient.turn_right();
     }
 
     cursor.pos = cursor.pos.clamp(-half_size, half_size);
@@ -125,7 +141,7 @@ fn update_cursor(
         trace!("Place item...");
         // Get the cell under the cursor, where the new item goes
         let cell_entity = board.cell_at(cursor.pos);
-        if let Ok((mut cell, mut cell_image)) = cell_query.get_mut(cell_entity) {
+        if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity) {
             // Check the cell is empty (don't overwrite!)
             if cell.item.is_none() {
                 // Get the selected inventory slot entity
@@ -133,14 +149,30 @@ fn update_cursor(
                     // Get the actual Slot component for that entity, and its image
                     if let Ok((mut slot, mut slot_image)) = slot_query.get_mut(slot_entity) {
                         // Try to take 1 item from that slot
-                        if let Some(item) = slot.try_take(1) {
+                        if let Some(item_id) = slot.try_take(1) {
+                            // Try to find item in database
+                            let item = database.get(item_id).unwrap();
                             // Success! Place item on board in cell
                             *cell_image = item.image.clone();
-                            cell.item = Some(item);
+                            cell_transform.rotation = cursor.orient.into();
+                            cell.item = Some(item_id);
                             // If slot is emtpy, clear its image
                             if slot.is_emtpy() {
                                 *slot_image = inventory.empty_slot_image().clone();
                             }
+
+                            let mesh: Mesh2dHandle = meshes
+                                .add(shape::Quad::new(Vec2::new(140., 4.)).into())
+                                .into();
+                            commands.spawn_bundle(MaterialMesh2dBundle {
+                                mesh,
+                                material: beam_materials.add(BeamMaterial {
+                                    color: Color::PURPLE,
+                                    pattern: 0xAAF0,
+                                }),
+                                //material: color_materials.add(Color::PURPLE.into()),
+                                ..default()
+                            });
                         } else {
                             debug!(
                                 "Slot #{} has no more item.",
@@ -196,17 +228,71 @@ impl MainCamera {
 #[reflect(Component)]
 struct Cursor {
     pos: IVec2,
+    orient: Orient,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+enum Orient {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+impl Default for Orient {
+    fn default() -> Self {
+        Orient::Top
+    }
+}
+
+impl Orient {
+    pub fn to_angle(&self) -> f32 {
+        match self {
+            Orient::Top => 0.,
+            Orient::Right => PI / 2.,
+            Orient::Bottom => PI,
+            Orient::Left => 3. * PI / 2.,
+        }
+    }
+
+    pub fn turn_left(&mut self) {
+        *self =  match self {
+            Orient::Top => Orient::Left,
+            Orient::Right => Orient::Top,
+            Orient::Bottom => Orient::Right,
+            Orient::Left => Orient::Bottom,
+        };
+    }
+
+    pub fn turn_right(&mut self) {
+        *self =  match self {
+            Orient::Top => Orient::Right,
+            Orient::Right => Orient::Bottom,
+            Orient::Bottom => Orient::Left,
+            Orient::Left => Orient::Top,
+        };
+    }
+}
+
+impl From<Orient> for Quat {
+    fn from(orient: Orient) -> Quat {
+        Quat::from_rotation_z(orient.to_angle())
+    }
 }
 
 #[derive(Component, Debug, Default, Clone)]
 struct Cell {
     ipos: IVec2,
-    item: Option<Item>,
+    item: Option<ItemId>,
+    orient: Orient,
 }
 
 impl Cell {
     pub fn new(ipos: IVec2) -> Self {
-        Self { ipos, item: None }
+        Self {
+            ipos,
+            ..default()
+        }
     }
 }
 
@@ -344,12 +430,25 @@ fn game_setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut fixup_images: ResMut<FixupImages>,
+    mut database: ResMut<ItemDatabase>,
 ) {
     println!("game_setup");
 
     sfx_audio.set_volume(0.5);
 
     //audio_res.sound_move_cursor = asset_server.load("sounds/move_cursor.ogg");
+
+    // Populate item database
+    for (id, name) in &[
+        ("halver", "Halver"),
+        ("inverter", "Inverter"),
+        ("into_red", "Converter"),
+        ("emit", "Emitter"),
+    ] {
+        let path = format!("textures/{}.png", id);
+        let image = asset_server.load(&path);
+        database.add(name, image);
+    }
 
     // Main camera
     commands
@@ -373,12 +472,16 @@ fn game_setup(
     input_map.insert(KeyCode::Right, PlayerAction::MoveRight);
     input_map.insert(KeyCode::D, PlayerAction::MoveRight);
     input_map.insert(GamepadButtonType::DPadDown, PlayerAction::MoveRight);
+    input_map.insert(KeyCode::Q, PlayerAction::TurnItemLeft);
+    input_map.insert(GamepadButtonType::DPadLeft, PlayerAction::TurnItemLeft);
+    input_map.insert(KeyCode::E, PlayerAction::TurnItemRight);
+    input_map.insert(GamepadButtonType::DPadRight, PlayerAction::TurnItemRight);
     input_map.insert(KeyCode::Space, PlayerAction::PlaceSelectedItem);
     input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem);
     input_map.insert(GamepadButtonType::South, PlayerAction::PlaceSelectedItem);
-    input_map.insert(KeyCode::Q, PlayerAction::SelectPrevItem);
+    input_map.insert(UserInput::chord([KeyCode::Tab, KeyCode::LShift]), PlayerAction::SelectPrevItem);
     input_map.insert(GamepadButtonType::LeftTrigger, PlayerAction::SelectPrevItem);
-    input_map.insert(KeyCode::E, PlayerAction::SelectNextItem);
+    input_map.insert(KeyCode::Tab, PlayerAction::SelectNextItem);
     input_map.insert(
         GamepadButtonType::RightTrigger,
         PlayerAction::SelectNextItem,
@@ -413,45 +516,21 @@ fn game_setup(
     let mut board = Board::new(size);
 
     // Inventory
-    let item0 = asset_server.load("textures/halver.png");
-    let item1 = asset_server.load("textures/inverter.png");
-    let item2 = asset_server.load("textures/into_red.png");
-    let item3 = asset_server.load("textures/emit.png");
     let mut children = vec![];
     for (index, (maybe_item, count)) in [
-        (
-            Some(Item {
-                image: item0.clone(),
-            }),
-            3,
-        ),
-        (
-            Some(Item {
-                image: item1.clone(),
-            }),
-            1,
-        ),
+        (Some(ItemId(0)), 3),
+        (Some(ItemId(1)), 1),
         (None, 0),
-        (
-            Some(Item {
-                image: item2.clone(),
-            }),
-            2,
-        ),
-        (
-            Some(Item {
-                image: item3.clone(),
-            }),
-            1,
-        ),
+        (Some(ItemId(2)), 2),
+        (Some(ItemId(3)), 1),
     ]
     .iter()
     .enumerate()
     {
         let count = if maybe_item.is_none() { 0 } else { *count };
         let pos = Vec3::new(index as f32 * board.cell_size().x, 0., 0.);
-        let texture = if let Some(item) = maybe_item {
-            item.image.clone()
+        let texture = if let Some(item_id) = maybe_item {
+            database.get(*item_id).unwrap().image.clone()
         } else {
             grid_image.clone()
         };
@@ -553,22 +632,49 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug)]
 struct Item {
+    name: String,
     image: Handle<Image>,
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct ItemId(u32);
+
+#[derive(Debug, Default)]
+struct ItemDatabase {
+    items: Vec<Item>,
+}
+
+impl ItemDatabase {
+    pub fn add(&mut self, name: &str, image: Handle<Image>) {
+        self.items.push(Item {
+            name: name.to_string(),
+            image,
+        });
+    }
+
+    pub fn get(&self, id: ItemId) -> Option<&Item> {
+        let index = id.0 as usize;
+        if index < self.items.len() {
+            Some(&self.items[index])
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Component, Default, Debug)]
 struct Slot {
-    item: Option<Item>,
+    item: Option<ItemId>,
     count: usize,
 }
 
 impl Slot {
-    pub fn try_take(&mut self, count: usize) -> Option<Item> {
+    pub fn try_take(&mut self, count: usize) -> Option<ItemId> {
         if count <= self.count {
             self.count -= count;
-            self.item.clone()
+            self.item
         } else {
             None
         }
