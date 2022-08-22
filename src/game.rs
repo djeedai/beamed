@@ -75,10 +75,19 @@ enum PlayerAction {
 fn update_cursor(
     board_query: Query<&Board>,
     input_query: Query<&ActionState<PlayerAction>>,
-    mut cursor_query: Query<(&mut Transform, &mut Cursor), (Without<InventoryCursor>, Without<Cell>)>,
+    mut cursor_query: Query<
+        (&mut Transform, &mut Cursor, &mut Animator<Transform>),
+        (Without<InventoryCursor>, Without<Cell>),
+    >,
     mut inventory_query: Query<&mut Inventory>,
-    mut inventory_cursor_query: Query<(&mut Transform, &mut InventoryCursor), (Without<Cursor>, Without<Cell>)>,
-    mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform), (Without<Slot>, Without<Cursor>, Without<InventoryCursor>)>,
+    mut inventory_cursor_query: Query<
+        (&mut Transform, &mut InventoryCursor),
+        (Without<Cursor>, Without<Cell>),
+    >,
+    mut cell_query: Query<
+        (&mut Cell, &mut Handle<Image>, &mut Transform),
+        (Without<Slot>, Without<Cursor>, Without<InventoryCursor>),
+    >,
     mut slot_query: Query<(&mut Slot, &mut Handle<Image>), Without<Cell>>,
     database: Res<ItemDatabase>,
     //
@@ -91,34 +100,36 @@ fn update_cursor(
     let size = board.size();
     let half_size = (size - 1) / 2;
 
-    let (mut transform, mut cursor) = cursor_query.single_mut();
+    let (mut transform, mut cursor, mut animator) = cursor_query.single_mut();
 
     let input_state = input_query.single();
 
+    let mut pos = cursor.pos;
     if input_state.just_pressed(PlayerAction::MoveLeft) {
-        cursor.pos.x -= 1;
+        pos.x -= 1;
     }
     if input_state.just_pressed(PlayerAction::MoveRight) {
-        cursor.pos.x += 1;
+        pos.x += 1;
     }
     if input_state.just_pressed(PlayerAction::MoveDown) {
-        cursor.pos.y -= 1;
+        pos.y -= 1;
     }
     if input_state.just_pressed(PlayerAction::MoveUp) {
-        cursor.pos.y += 1;
+        pos.y += 1;
     }
     if input_state.just_pressed(PlayerAction::TurnItemLeft) {
-        cursor.orient.turn_left();
+        cursor.turn_to(transform.rotation, -1, &mut *animator);
     }
     if input_state.just_pressed(PlayerAction::TurnItemRight) {
-        cursor.orient.turn_right();
+        cursor.turn_to(transform.rotation, 1, &mut *animator);
     }
 
-    cursor.pos = cursor.pos.clamp(-half_size, half_size);
+    pos = pos.clamp(-half_size, half_size);
     //trace!("size={:?} half={:?} pos={:?}", size, half_size, cursor.pos);
 
-    transform.translation =
-        (cursor.pos.as_vec2() * board.cell_size).extend(transform.translation.z);
+    if pos != cursor.pos {
+        cursor.move_to(transform.translation, pos, board.cell_size, &mut *animator);
+    }
 
     let mut inventory = inventory_query.single_mut();
 
@@ -141,7 +152,8 @@ fn update_cursor(
         trace!("Place item...");
         // Get the cell under the cursor, where the new item goes
         let cell_entity = board.cell_at(cursor.pos);
-        if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity) {
+        if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity)
+        {
             // Check the cell is empty (don't overwrite!)
             if cell.item.is_none() {
                 // Get the selected inventory slot entity
@@ -231,6 +243,49 @@ struct Cursor {
     orient: Orient,
 }
 
+impl Cursor {
+    pub fn move_to(
+        &mut self,
+        start: Vec3,
+        end: IVec2,
+        cell_size: Vec2,
+        animator: &mut Animator<Transform>,
+    ) {
+        // Move authoritative position
+        self.pos = end;
+
+        // Animate visual position
+        let lens = TransformPositionLens {
+            start,
+            end: (end.as_vec2() * cell_size).extend(start.z),
+        };
+        animator.set_tweenable(Tween::new(
+            EaseFunction::QuadraticInOut,
+            TweeningType::Once,
+            Duration::from_millis(200),
+            lens,
+        ));
+    }
+
+    pub fn turn_to(&mut self, start: Quat, dir: i32, animator: &mut Animator<Transform>) {
+        if dir < 0 {
+            self.orient.turn_right();
+        } else if dir > 0 {
+        self.orient.turn_left();
+        }
+        let lens = TransformRotationLens {
+            start,
+            end: self.orient.into(),
+        };
+        animator.set_tweenable(Tween::new(
+            EaseFunction::QuadraticInOut,
+            TweeningType::Once,
+            Duration::from_millis(200),
+            lens,
+        ));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
 enum Orient {
     Top,
@@ -256,7 +311,7 @@ impl Orient {
     }
 
     pub fn turn_left(&mut self) {
-        *self =  match self {
+        *self = match self {
             Orient::Top => Orient::Left,
             Orient::Right => Orient::Top,
             Orient::Bottom => Orient::Right,
@@ -265,7 +320,7 @@ impl Orient {
     }
 
     pub fn turn_right(&mut self) {
-        *self =  match self {
+        *self = match self {
             Orient::Top => Orient::Right,
             Orient::Right => Orient::Bottom,
             Orient::Bottom => Orient::Left,
@@ -289,10 +344,7 @@ struct Cell {
 
 impl Cell {
     pub fn new(ipos: IVec2) -> Self {
-        Self {
-            ipos,
-            ..default()
-        }
+        Self { ipos, ..default() }
     }
 }
 
@@ -479,7 +531,10 @@ fn game_setup(
     input_map.insert(KeyCode::Space, PlayerAction::PlaceSelectedItem);
     input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem);
     input_map.insert(GamepadButtonType::South, PlayerAction::PlaceSelectedItem);
-    input_map.insert(UserInput::chord([KeyCode::Tab, KeyCode::LShift]), PlayerAction::SelectPrevItem);
+    input_map.insert(
+        UserInput::chord([KeyCode::Tab, KeyCode::LShift]),
+        PlayerAction::SelectPrevItem,
+    );
     input_map.insert(GamepadButtonType::LeftTrigger, PlayerAction::SelectPrevItem);
     input_map.insert(KeyCode::Tab, PlayerAction::SelectNextItem);
     input_map.insert(
@@ -502,6 +557,7 @@ fn game_setup(
         })
         .insert(Cursor::default())
         .insert(Name::new("cursor"))
+        .insert(Animator::<Transform>::default())
         .insert_bundle(InputManagerBundle::<PlayerAction> {
             action_state: ActionState::default(),
             input_map,
