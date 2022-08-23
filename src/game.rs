@@ -1084,26 +1084,27 @@ impl Bit {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct BitPattern(pub [Bit; 16]);
+struct BitPattern {
+    pattern: u16,
+    colors: [BitColor; 16],
+    thicknesses: [u8; 16],
+}
 
 impl BitPattern {
     /// Create a simple pattern of constant color and thickness.
     pub fn simple(color: BitColor, pattern: u16, thickness: u8) -> Self {
-        let arr: Vec<Bit> = (0..16)
-            .map(move |i| {
-                let set = pattern & (1u16 << i);
-                let t = if set != 0 { thickness } else { 0 };
-                Bit::new(color, t)
-            })
-            .collect();
-        Self(arr[..16].try_into().unwrap())
+        Self {
+            pattern,
+            colors: [color; 16],
+            thicknesses: [thickness; 16],
+        }
     }
 
     pub fn monochrome(&self) -> Option<BitColor> {
         let mut ret: Option<BitColor> = None;
         for i in 0..16 {
-            if self.0[i].thickness() > 0 {
-                let color = self.0[i].color();
+            if self.pattern & (1u16 << i) != 0 {
+                let color = self.colors[i];
                 if let Some(prev_color) = &ret {
                     if *prev_color != color {
                         return None;
@@ -1119,8 +1120,8 @@ impl BitPattern {
     pub fn thickness(&self) -> Option<u8> {
         let mut ret: Option<u8> = None;
         for i in 0..16 {
-            let thickness = self.0[i].thickness();
-            if thickness > 0 {
+            if self.pattern & (1u16 << i) != 0 {
+                let thickness = self.thicknesses[i];
                 if let Some(prev_thickness) = &ret {
                     if *prev_thickness != thickness {
                         return None;
@@ -1160,14 +1161,11 @@ impl Emitter {
 impl Gate for Emitter {
     fn tick(&mut self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) {
         // Create continuous bit pattern
-        let mut ret = BitPattern::default();
-        for i in 0..16 {
-            ret.0[i] = self.bit;
-        }
+        let pattern = BitPattern::simple(self.bit.color(), 0xFFFF, self.bit.thickness());
 
         // Assign to (single) output
         let output = &mut outputs[0];
-        output.pattern = Some(ret);
+        output.pattern = Some(pattern);
     }
 }
 
@@ -1188,17 +1186,22 @@ impl Gate for BitManipulator {
         let input = &inputs[0];
         let output = &mut outputs[0];
         output.pattern = None;
+        let pattern = if let Some(pattern) = input.pattern {
+            pattern
+        } else {
+            return;
+        };
         match self.op {
             BitOp::None => (),
             BitOp::Not => {
-                if let Some(pattern) = input.pattern {
+                if let Some(color) = pattern.monochrome() {
                     if let Some(thickness) = pattern.thickness() {
-                        let mut ret = BitPattern::default();
+                        let mut ret = pattern;
+                        ret.pattern = !ret.pattern;
                         for i in 0..16 {
-                            if ret.0[i].thickness() > 0 {
-                                ret.0[i].set_thickness(0);
-                            } else {
-                                ret.0[i].set_thickness(thickness);
+                            if ret.pattern & (1u16 << i) != 0 {
+                                ret.thicknesses[i] = thickness;
+                                ret.colors[i] = color;
                             }
                         }
                         output.pattern = Some(ret);
@@ -1206,7 +1209,9 @@ impl Gate for BitManipulator {
                 }
             }
             BitOp::And => {
-                unimplemented!()
+                let mut ret = pattern;
+                ret.pattern &= self.pattern;
+                output.pattern = Some(ret);
             }
             BitOp::Or => {
                 unimplemented!()
@@ -1266,7 +1271,7 @@ mod tests {
 
         {
             let mut none = BitManipulator::new(0xFFFF, BitOp::None);
-            let input_pattern = BitPattern([Bit::new(BitColor::Red, 1); 16]);
+            let input_pattern = BitPattern::simple(BitColor::Red, 0xFFFF, 16);
             inputs[0].pattern = Some(input_pattern);
             none.tick(&inputs, &mut outputs);
             assert_eq!(1, outputs.len());
