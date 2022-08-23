@@ -1074,7 +1074,7 @@ impl Bit {
 
     #[inline]
     pub fn thickness(&self) -> u8 {
-        (self.value & 0xF) >> 4
+        (self.value & 0xF0) >> 4
     }
 
     #[inline]
@@ -1087,6 +1087,18 @@ impl Bit {
 struct BitPattern(pub [Bit; 16]);
 
 impl BitPattern {
+    /// Create a simple pattern of constant color and thickness.
+    pub fn simple(color: BitColor, pattern: u16, thickness: u8) -> Self {
+        let arr: Vec<Bit> = (0..16)
+            .map(move |i| {
+                let set = pattern & (1u16 << i);
+                let t = if set != 0 { thickness } else { 0 };
+                Bit::new(color, t)
+            })
+            .collect();
+        Self(arr[..16].try_into().unwrap())
+    }
+
     pub fn monochrome(&self) -> Option<BitColor> {
         let mut ret: Option<BitColor> = None;
         for i in 0..16 {
@@ -1237,14 +1249,12 @@ mod tests {
 
     #[test]
     fn bit_manipulator() {
-        let mut none = BitManipulator::new(0xFFFF, BitOp::None);
         let input = InputPort {
             port: Orient::Top.into(),
         };
-        let input_pattern = BitPattern([Bit::new(BitColor::Red, 1); 16]);
-        let inputs = [InputBeam {
+        let mut inputs = [InputBeam {
             port: &input,
-            pattern: Some(input_pattern),
+            pattern: None,
         }];
         let output = OutputPort {
             port: Orient::Bottom.into(),
@@ -1253,10 +1263,30 @@ mod tests {
             port: &output,
             pattern: None,
         }];
-        none.tick(&inputs, &mut outputs);
-        assert_eq!(1, outputs.len());
-        let output = &outputs[0];
-        assert!(output.pattern.is_some());
-        let output = output.pattern.unwrap();
+
+        {
+            let mut none = BitManipulator::new(0xFFFF, BitOp::None);
+            let input_pattern = BitPattern([Bit::new(BitColor::Red, 1); 16]);
+            inputs[0].pattern = Some(input_pattern);
+            none.tick(&inputs, &mut outputs);
+            assert_eq!(1, outputs.len());
+            let output = &outputs[0];
+            assert!(output.pattern.is_none());
+        }
+
+        {
+            let mut not = BitManipulator::new(0xFFFF, BitOp::Not);
+            let input_pattern = BitPattern::simple(BitColor::Red, 0xBEEF, 1);
+            inputs[0].pattern = Some(input_pattern);
+            not.tick(&inputs, &mut outputs);
+            assert_eq!(1, outputs.len());
+            let output = &outputs[0];
+            assert!(output.pattern.is_some());
+            let pattern = output.pattern.unwrap();
+            let mono = pattern.monochrome();
+            assert!(mono.is_some());
+            let color = mono.unwrap();
+            assert_eq!(BitColor::Red, color);
+        }
     }
 }
