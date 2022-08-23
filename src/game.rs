@@ -331,18 +331,13 @@ impl Cursor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, Default)]
 enum Orient {
+    #[default]
     Top,
     Right,
     Bottom,
     Left,
-}
-
-impl Default for Orient {
-    fn default() -> Self {
-        Orient::Top
-    }
 }
 
 impl Orient {
@@ -539,49 +534,61 @@ fn game_setup(
     //audio_res.sound_move_cursor = asset_server.load("sounds/move_cursor.ogg");
 
     // Populate item database
-    for (id, name, inputs, outputs) in [
+    for (id, name, inputs, outputs, gate) in [
         (
             "halver",
             "Halver",
             vec![InputPort {
-                orient: Orient::Bottom, // TODO - any! (pass-through)
+                port: PassThroughOrient::Horizontal.into(),
             }],
             vec![OutputPort {
-                orient: Orient::Top, // TODO - any! (pass-through)
+                port: PassThroughOrient::Horizontal.into(),
             }],
+            Box::new(BitManipulator::new(0xF0F0, BitOp::None)) as Box<dyn Gate>,
         ),
         (
             "inverter",
             "Inverter",
             vec![InputPort {
-                orient: Orient::Bottom, // TODO - any! (pass-through)
+                port: PassThroughOrient::Horizontal.into(),
             }],
             vec![OutputPort {
-                orient: Orient::Top, // TODO - any! (pass-through)
+                port: PassThroughOrient::Horizontal.into(),
             }],
+            Box::new(BitManipulator::new(0xFFFF, BitOp::Not)),
         ),
         (
-            "into_red",
+            "filter_red",
             "Filter",
             vec![InputPort {
-                orient: Orient::Bottom, // TODO - any! (pass-through)
+                port: PassThroughOrient::Any.into(),
             }],
             vec![OutputPort {
-                orient: Orient::Top, // TODO - any! (pass-through)
+                port: PassThroughOrient::Any.into(),
             }],
+            Box::new(Filter::new(BitColor::Red)),
         ),
         (
             "emit",
             "Emitter",
             vec![],
             vec![OutputPort {
-                orient: Orient::Top, // TODO : also, multi_emit in all 4 directions (for different challenge)
+                port: Orient::Top.into(),
             }],
+            Box::new(Emitter::new(BitColor::Red, 1)),
         ),
+        // (
+        //     "multi_emit",
+        //     "Multi-Emitter",
+        //     vec![],
+        //     vec![OutputPort {
+        //         port: Port::Any,
+        //     }],
+        // ),
     ] {
         let path = format!("textures/{}.png", id);
         let image = asset_server.load(&path);
-        database.add(name, image, inputs, outputs);
+        database.add(name, image, inputs, outputs, gate);
     }
 
     // Main camera
@@ -770,35 +777,77 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
     }
 }
 
-trait Gate {
-    fn tick(&mut self);
+trait Gate: Send + Sync + 'static {
+    fn tick(&mut self, inputs: &[InputBeam], outputs: &mut [OutputBeam]);
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassThroughOrient {
+    Horizontal,
+    Vertical,
+    Any,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Port {
+    Single(Orient),
+    PassThrough(PassThroughOrient),
+    Any,
+}
+
+impl From<Orient> for Port {
+    fn from(orient: Orient) -> Port {
+        Port::Single(orient)
+    }
+}
+
+impl From<PassThroughOrient> for Port {
+    fn from(pto: PassThroughOrient) -> Port {
+        Port::PassThrough(pto)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct InputPort {
-    orient: Orient,
+    port: Port,
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct OutputPort {
-    orient: Orient,
+    port: Port,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug, Clone, Copy)]
+struct InputBeam<'a> {
+    port: &'a InputPort,
+    pattern: Option<BitPattern>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OutputBeam<'a> {
+    port: &'a OutputPort,
+    pattern: Option<BitPattern>,
+}
+
 struct Item {
     name: String,
     image: Handle<Image>,
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
-    //gate: Box<dyn Gate>,
+    gate: Box<dyn Gate>,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 struct ItemId(u32);
 
-#[derive(Debug, Default)]
 struct ItemDatabase {
     items: Vec<Item>,
+}
+
+impl Default for ItemDatabase {
+    fn default() -> Self {
+        ItemDatabase { items: vec![] }
+    }
 }
 
 impl ItemDatabase {
@@ -808,6 +857,7 @@ impl ItemDatabase {
         image: Handle<Image>,
         inputs: Vec<InputPort>,
         outputs: Vec<OutputPort>,
+        gate: Box<dyn Gate>,
     ) -> ItemId {
         let id = ItemId(self.items.len() as u32);
         self.items.push(Item {
@@ -815,6 +865,7 @@ impl ItemDatabase {
             image,
             inputs,
             outputs,
+            gate,
         });
         id
     }
@@ -947,21 +998,40 @@ impl Inventory {
 #[reflect(Component)]
 struct InventoryCursor;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum BitColor {
-    White = 0,
+    #[default]
+    White,
     Red,
+    Yellow,
     Green,
     Blue,
+    Violet,
 }
 
 impl BitColor {
+    #[inline]
+    pub fn new(raw: u8) -> Self {
+        match raw {
+            0 => BitColor::White,
+            1 => BitColor::Red,
+            2 => BitColor::Yellow,
+            3 => BitColor::Green,
+            4 => BitColor::Blue,
+            5 => BitColor::Violet,
+            _ => panic!("Invalid BitColor raw value {}", raw),
+        }
+    }
+
     #[inline]
     pub fn raw(&self) -> u8 {
         match &self {
             BitColor::White => 0,
             BitColor::Red => 1,
-            BitColor::Green => 2,
-            BitColor::Blue => 3,
+            BitColor::Yellow => 2,
+            BitColor::Green => 3,
+            BitColor::Blue => 4,
+            BitColor::Violet => 5,
         }
     }
 }
@@ -971,8 +1041,10 @@ impl From<BitColor> for Color {
         match bc {
             BitColor::White => Color::WHITE,
             BitColor::Red => Color::RED,
+            BitColor::Yellow => Color::YELLOW,
             BitColor::Green => Color::GREEN,
             BitColor::Blue => Color::BLUE,
+            BitColor::Violet => Color::VIOLET,
         }
     }
 }
@@ -984,8 +1056,15 @@ struct Bit {
 
 impl Bit {
     #[inline]
-    pub fn color(&self) -> u8 {
-        self.value & 0xF
+    pub fn new(color: BitColor, thickness: u8) -> Self {
+        Self {
+            value: (color.raw() & 0xF) | ((thickness & 0xF) << 4),
+        }
+    }
+
+    #[inline]
+    pub fn color(&self) -> BitColor {
+        BitColor::new(self.value & 0xF)
     }
 
     #[inline]
@@ -1004,9 +1083,180 @@ impl Bit {
     }
 }
 
-#[derive(Component, Default, Debug)]
-struct Emitter {
-    pattern: [Bit; 16],
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BitPattern(pub [Bit; 16]);
+
+impl BitPattern {
+    pub fn monochrome(&self) -> Option<BitColor> {
+        let mut ret: Option<BitColor> = None;
+        for i in 0..16 {
+            if self.0[i].thickness() > 0 {
+                let color = self.0[i].color();
+                if let Some(prev_color) = &ret {
+                    if *prev_color != color {
+                        return None;
+                    }
+                } else {
+                    ret = Some(color);
+                }
+            }
+        }
+        ret
+    }
+
+    pub fn thickness(&self) -> Option<u8> {
+        let mut ret: Option<u8> = None;
+        for i in 0..16 {
+            let thickness = self.0[i].thickness();
+            if thickness > 0 {
+                if let Some(prev_thickness) = &ret {
+                    if *prev_thickness != thickness {
+                        return None;
+                    }
+                } else {
+                    ret = Some(thickness);
+                }
+            }
+        }
+        ret
+    }
 }
 
-impl Emitter {}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum BitOp {
+    #[default]
+    None,
+    Not,
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Component, Default, Debug)]
+struct Emitter {
+    bit: Bit,
+}
+
+impl Emitter {
+    pub fn new(color: BitColor, thickness: u8) -> Self {
+        Self {
+            bit: Bit::new(color, thickness),
+        }
+    }
+}
+
+impl Gate for Emitter {
+    fn tick(&mut self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) {
+        // Create continuous bit pattern
+        let mut ret = BitPattern::default();
+        for i in 0..16 {
+            ret.0[i] = self.bit;
+        }
+
+        // Assign to (single) output
+        let output = &mut outputs[0];
+        output.pattern = Some(ret);
+    }
+}
+
+#[derive(Component, Default, Debug)]
+struct BitManipulator {
+    pattern: u16,
+    op: BitOp,
+}
+
+impl BitManipulator {
+    pub fn new(pattern: u16, op: BitOp) -> Self {
+        Self { pattern, op }
+    }
+}
+
+impl Gate for BitManipulator {
+    fn tick(&mut self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) {
+        let input = &inputs[0];
+        let output = &mut outputs[0];
+        output.pattern = None;
+        match self.op {
+            BitOp::None => (),
+            BitOp::Not => {
+                if let Some(pattern) = input.pattern {
+                    if let Some(thickness) = pattern.thickness() {
+                        let mut ret = BitPattern::default();
+                        for i in 0..16 {
+                            if ret.0[i].thickness() > 0 {
+                                ret.0[i].set_thickness(0);
+                            } else {
+                                ret.0[i].set_thickness(thickness);
+                            }
+                        }
+                        output.pattern = Some(ret);
+                    }
+                }
+            }
+            BitOp::And => {
+                unimplemented!()
+            }
+            BitOp::Or => {
+                unimplemented!()
+            }
+            BitOp::Xor => {
+                unimplemented!()
+            }
+        }
+    }
+}
+
+#[derive(Component, Debug)]
+struct Filter {
+    color: BitColor,
+}
+
+impl Filter {
+    pub fn new(color: BitColor) -> Self {
+        Self { color }
+    }
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Self {
+            color: BitColor::White,
+        }
+    }
+}
+
+impl Gate for Filter {
+    fn tick(&mut self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) {
+        // TODO
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bit_manipulator() {
+        let mut none = BitManipulator::new(0xFFFF, BitOp::None);
+        let input = InputPort {
+            port: Orient::Top.into(),
+        };
+        let input_pattern = BitPattern([Bit::new(BitColor::Red, 1); 16]);
+        let inputs = [InputBeam {
+            port: &input,
+            pattern: Some(input_pattern),
+        }];
+        let output = OutputPort {
+            port: Orient::Bottom.into(),
+        };
+        let mut outputs = [OutputBeam {
+            port: &output,
+            pattern: None,
+        }];
+        none.tick(&inputs, &mut outputs);
+        assert_eq!(1, outputs.len());
+        let output = &outputs[0];
+        assert!(output.pattern.is_some());
+        let output = output.pattern.unwrap();
+    }
+}
