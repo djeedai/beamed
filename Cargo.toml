@@ -1,5 +1,5 @@
 [package]
-name = "combine"
+name = "beamed"
 version = "0.1.0"
 authors = ["Jerome Humbert <djeedai@gmail.com>"]
 edition = "2021"
