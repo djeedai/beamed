@@ -46,7 +46,7 @@ fn main() {
     })
     .insert_resource(bevy::log::LogSettings {
         level: bevy::log::Level::WARN,
-        filter: "combine=trace".to_string(),
+        filter: "beamed=trace".to_string(),
     })
     .insert_resource(sampler) // RHHHHAAAAAAA!!!!
     .insert_resource(ClearColor(Color::rgba(0., 0., 0., 0.)))

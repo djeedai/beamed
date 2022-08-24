@@ -180,19 +180,6 @@ fn update_cursor(
                             if slot.is_emtpy() {
                                 *slot_image = inventory.empty_slot_image().clone();
                             }
-
-                            // let mesh: Mesh2dHandle = meshes
-                            //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
-                            //     .into();
-                            // commands.spawn_bundle(MaterialMesh2dBundle {
-                            //     mesh,
-                            //     material: beam_materials.add(BeamMaterial {
-                            //         color: Color::PURPLE,
-                            //         pattern: 0xAAF0,
-                            //     }),
-                            //     //material: color_materials.add(Color::PURPLE.into()),
-                            //     ..default()
-                            // });
                         } else {
                             debug!(
                                 "Slot #{} has no more item.",
@@ -217,6 +204,7 @@ fn update_cursor(
     }
 }
 
+/// Update the Board, adding/removing items and ticking all.
 fn update_board(
     database: Res<ItemDatabase>,
     mut board_query: Query<&mut Board>,
@@ -231,17 +219,102 @@ fn update_board(
     for ev in place_item_event_reader.iter() {
         // Get the cell under the cursor, where the new item goes
         let cell_entity = board.cell_at(ev.ipos);
+        trace!(
+            "PlaceItem: ipos={:?} cell_entity={:?}",
+            ev.ipos,
+            cell_entity
+        );
         if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity)
         {
             // Check the cell is empty (don't overwrite!)
             if cell.item.is_none() {
-                // Success! Place item on board in cell
+                // Success!
                 let item = database.get(ev.item_id);
+
+                // Update cell, for graphics
                 *cell_image = item.image.clone();
                 cell_transform.rotation = ev.orient.into();
                 cell.item = Some(ev.item_id);
-                // Update board
-                board.add(item);
+
+                // Update board, for logic
+                trace!(
+                    "board.add() ipos={:?} orient={:?} item_id={:?}",
+                    ev.ipos,
+                    ev.orient,
+                    ev.item_id
+                );
+                board.add(ev.ipos, ev.orient, cell_entity, ev.item_id, item);
+
+                FIXME - instead of trying to directly connect inputs, let's break down existing
+                beams that intersect the position of the new tile, and conect inputs that way.
+                Then we can connect outputs with raycast as below.
+
+                // Connect inputs of new item
+                for input in &item.inputs {
+                    trace!("Input: port={:?}", input.port);
+                    match input.port {
+                        Port::Single(in_orient) => {
+                            let global_in_orient = ev.orient + in_orient;
+                            trace!(
+                                "+ item_orient={:?} local_orient={:?} global_orient={:?}",
+                                ev.orient,
+                                in_orient,
+                                global_in_orient
+                            );
+
+                            if let Some((out_ipos, out_item_orient, out_item_id)) =
+                                board.find(ev.ipos, global_in_orient)
+                            {
+                                trace!(
+                                    "Found item: ipos={:?} orient={:?} id={:?}",
+                                    out_ipos,
+                                    out_item_orient,
+                                    out_item_id
+                                );
+
+                                let out_item = database.get(out_item_id);
+
+                                // Calculate the orientation of the output, which is the opposite
+                                // of the orientation of the search.
+                                let global_out_orient = global_in_orient.reversed();
+                                trace!("global_out_orient = {:?}", global_out_orient);
+
+                                // Calculate the orientation locally for the output port/item
+                                let local_out_orient = global_out_orient - out_item_orient;
+                                trace!("local_out_orient = {:?}", local_out_orient);
+
+                                // Check if the item has an output to connect to
+                                for output in &out_item.outputs {
+                                    trace!("+ output = {:?}", output.port);
+
+                                    if output.port.can_connect_from(local_out_orient) {
+                                        trace!("Connect!");
+
+                                        //board.connect();
+
+                                        // let mesh: Mesh2dHandle = meshes
+                                        //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
+                                        //     .into();
+                                        // commands.spawn_bundle(MaterialMesh2dBundle {
+                                        //     mesh,
+                                        //     material: beam_materials.add(BeamMaterial {
+                                        //         color: Color::PURPLE,
+                                        //         pattern: 0xAAF0,
+                                        //     }),
+                                        //     //material: color_materials.add(Color::PURPLE.into()),
+                                        //     ..default()
+                                        // });
+                                    }
+                                }
+
+                                // Beams cannot cross an item, so stop search here
+                                break;
+                            }
+                        }
+                        Port::PassThrough(pto) => {}
+                        Port::Any => {}
+                    }
+                }
             } else {
                 debug!(
                     "Cell at pos {:?} already contains an item, cannot place another one.",
@@ -334,10 +407,10 @@ impl Cursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Reflect, Default)]
 enum Orient {
     #[default]
-    Top,
-    Right,
-    Bottom,
-    Left,
+    Top = 0,
+    Right = 1,
+    Bottom = 2,
+    Left = 3,
 }
 
 impl Orient {
@@ -347,6 +420,15 @@ impl Orient {
             Orient::Right => PI / 2.,
             Orient::Bottom => PI,
             Orient::Left => 3. * PI / 2.,
+        }
+    }
+
+    pub fn to_dir(&self) -> IVec2 {
+        match self {
+            Orient::Top => IVec2::Y,
+            Orient::Right => IVec2::X,
+            Orient::Bottom => IVec2::NEG_Y,
+            Orient::Left => IVec2::NEG_X,
         }
     }
 
@@ -367,11 +449,48 @@ impl Orient {
             Orient::Left => Orient::Top,
         };
     }
+
+    pub fn reversed(&self) -> Orient {
+        match self {
+            Orient::Top => Orient::Bottom,
+            Orient::Right => Orient::Left,
+            Orient::Bottom => Orient::Top,
+            Orient::Left => Orient::Right,
+        }
+    }
+
+    fn from_raw(value: i32) -> Orient {
+        match value {
+            0 => Orient::Top,
+            1 => Orient::Right,
+            2 => Orient::Bottom,
+            3 => Orient::Left,
+            _ => panic!(),
+        }
+    }
 }
 
 impl From<Orient> for Quat {
     fn from(orient: Orient) -> Quat {
         Quat::from_rotation_z(orient.to_angle())
+    }
+}
+
+impl std::ops::Add for Orient {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self {
+        let value = ((self as i32) + (rhs as i32)) % 4;
+        Orient::from_raw(value)
+    }
+}
+
+impl std::ops::Sub for Orient {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self {
+        let value = ((self as i32) + 4 - (rhs as i32)) % 4;
+        Orient::from_raw(value)
     }
 }
 
@@ -392,7 +511,10 @@ impl Cell {
 struct Board {
     size: IVec2,
     cell_size: Vec2,
+    /// Entity for drawning the cell.
     cells: Vec<Entity>,
+    /// Entity for an item, if any.
+    items: Vec<Option<(Orient, Entity, ItemId)>>,
 }
 
 impl Board {
@@ -401,7 +523,8 @@ impl Board {
         Self {
             size,
             cell_size: Vec2::splat(32.),
-            cells: vec![],
+            cells: vec![], // TEMP; until set_cells() called
+            items: vec![None; count],
         }
     }
 
@@ -482,21 +605,77 @@ impl Board {
         }
     }
 
-    pub fn cell_at(&self, ipos: IVec2) -> Entity {
+    fn index(&self, ipos: IVec2) -> usize {
         let min = self.rect().0;
-        let index = (ipos.y - min.y) * self.size.x + (ipos.x - min.x);
-        trace!(
-            "ipos={:?} min={:?} size={:?} index={}",
-            ipos,
-            min,
-            self.size,
-            index
-        );
-        self.cells[index as usize]
+        ((ipos.y - min.y) * self.size.x + (ipos.x - min.x)) as usize
+    }
+
+    pub fn cell_at(&self, ipos: IVec2) -> Entity {
+        let index = self.index(ipos);
+        trace!("ipos={:?} size={:?} index={}", ipos, self.size, index);
+        self.cells[index]
     }
 
     /// Add a new instance of the given item onto the board.
-    pub fn add(&mut self, item: &Item) {}
+    pub fn add(
+        &mut self,
+        ipos: IVec2,
+        orient: Orient,
+        entity: Entity,
+        item_id: ItemId,
+        _item: &Item,
+    ) {
+        let index = self.index(ipos);
+        self.items[index] = Some((orient, entity, item_id));
+    }
+
+    pub fn try_get(&self, ipos: IVec2) -> GetBoard {
+        let r = self.rect();
+        if ipos.x >= r.0.x && ipos.x <= r.1.x && ipos.y >= r.0.y && ipos.y <= r.1.y {
+            let index = self.index(ipos);
+            if let Some(item_tuple) = self.items[index] {
+                GetBoard::Item(item_tuple)
+            } else {
+                GetBoard::Empty
+            }
+        } else {
+            GetBoard::Outside
+        }
+    }
+
+    /// Find a tile search from an existing starting tile alongside the given orientation.
+    pub fn find(&self, start: IVec2, orient: Orient) -> Option<(IVec2, Orient, ItemId)> {
+        let r = self.rect();
+        let index = self.index(start);
+        let (local_orient, _, _) = self.items[index].unwrap();
+
+        // Get the world-space orientation of the search from its local orientation
+        // and the orientation of the start tile itself.
+        let global_orient = local_orient + orient;
+        let dir = orient.to_dir();
+
+        // Check all tiles in the given direction until a connection is made or
+        // the border of the board is reached without finding one.
+        let mut ipos = start + dir;
+        loop {
+            match self.try_get(ipos) {
+                // No tile at this position, continue checking next one in same direction
+                GetBoard::Empty => ipos += dir,
+                // Reached the border of the board, found nothing
+                GetBoard::Outside => return None,
+                // Reached an item
+                GetBoard::Item((local_orient, entity, item_id)) => {
+                    return Some((ipos, local_orient, item_id))
+                }
+            }
+        }
+    }
+}
+
+enum GetBoard {
+    Empty,
+    Outside,
+    Item((Orient, Entity, ItemId)),
 }
 
 #[derive(Component)]
@@ -793,6 +972,22 @@ enum Port {
     Single(Orient),
     PassThrough(PassThroughOrient),
     Any,
+}
+
+impl Port {
+    pub fn can_connect_from(&self, orient: Orient) -> bool {
+        match *self {
+            Port::Single(or) => or == orient,
+            Port::PassThrough(pto) => {
+                (pto == PassThroughOrient::Horizontal
+                    && (orient == Orient::Left || orient == Orient::Right))
+                    || (pto == PassThroughOrient::Vertical
+                        && (orient == Orient::Top || orient == Orient::Bottom))
+                    || (pto == PassThroughOrient::Any)
+            }
+            Port::Any => true,
+        }
+    }
 }
 
 impl From<Orient> for Port {
@@ -1169,6 +1364,9 @@ impl Gate for Emitter {
     }
 }
 
+/// A bit manipulator gate applying a bit operation and pattern to its single input.
+///
+/// Only works with None/Not/And ops.
 #[derive(Component, Default, Debug)]
 struct BitManipulator {
     pattern: u16,
