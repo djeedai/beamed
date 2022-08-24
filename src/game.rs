@@ -206,10 +206,13 @@ fn update_cursor(
 
 /// Update the Board, adding/removing items and ticking all.
 fn update_board(
+    mut commands: Commands,
     database: Res<ItemDatabase>,
     mut board_query: Query<&mut Board>,
-    mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform)>,
+    mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform), Without<Beam>>,
+    mut beam_query: Query<(Entity, &mut Beam, &mut Transform, &Mesh2dHandle), Without<Cell>>,
     mut place_item_event_reader: EventReader<PlaceItemEvent>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let mut board = board_query.single_mut();
     let size = board.size();
@@ -236,6 +239,8 @@ fn update_board(
                 cell_transform.rotation = ev.orient.into();
                 cell.item = Some(ev.item_id);
 
+                let cell_size = board.cell_size();
+
                 // Update board, for logic
                 trace!(
                     "board.add() ipos={:?} orient={:?} item_id={:?}",
@@ -243,54 +248,102 @@ fn update_board(
                     ev.orient,
                     ev.item_id
                 );
-                board.add(ev.ipos, ev.orient, cell_entity, ev.item_id, item);
+                let new_tile = board.add(ev.ipos, ev.orient, cell_entity, ev.item_id, item);
 
-                FIXME - instead of trying to directly connect inputs, let's break down existing
-                beams that intersect the position of the new tile, and conect inputs that way.
-                Then we can connect outputs with raycast as below.
+                // Split intersecting beams
+                let mut reprocess = vec![];
+                for (beam_entity, mut beam, mut beam_transform, beam_handle) in
+                    beam_query.iter_mut()
+                {
+                    trace!("Try split beam: {:?} -> {:?}", beam.start, beam.end);
+                    let input_entity = match beam.try_split_at(ev.ipos, cell_entity) {
+                        SplitResult::None => continue,
+                        SplitResult::DeleteSelf(input_entity) => {
+                            // Delete self
+                            commands.entity(beam_entity).despawn_recursive();
+                            input_entity
+                        }
+                        SplitResult::ShortenSelf(input_entity) => {
+                            // Update self with shortened beam
+                            if let Some(mesh) = meshes.get_mut(&beam_handle.0) {
+                                beam.rebuild_mesh(mesh, cell_size);
+                            }
+                            input_entity
+                        }
+                    };
 
-                // Connect inputs of new item
-                for input in &item.inputs {
-                    trace!("Input: port={:?}", input.port);
-                    match input.port {
-                        Port::Single(in_orient) => {
-                            let global_in_orient = ev.orient + in_orient;
+                    // Reprocess endpoint, which was receiving this beam but the beam is about
+                    // to be deleted or the beam was shortened so doesn't reach it anymore.
+                    if let Some(input_entity) = input_entity {
+                        reprocess.push((beam_entity, input_entity));
+                    }
+
+                    // Connect split beam to new tile's input if possible
+                    let dir = ev.ipos - beam.start;
+                    let global_orient = Orient::from_dir(dir);
+                    if new_tile.connect_input_from(global_orient, cell_entity) {
+                        // TODO - should we mark somehow the tile modified so that next Gate::tick() update outputs?
+                    }
+                }
+
+                // Reprocess split endpoints to check if they were inputs and need to get deactived
+                for (beam_entity, input_entity) in reprocess {
+                    let (mut cell, mut cell_image, mut cell_transform) =
+                        cell_query.get_mut(input_entity).unwrap();
+                    let item_id = cell.item.unwrap();
+                    let item = database.get(item_id);
+                    let tile = board.try_get_tile_mut(beam_entity).unwrap();
+                    for (port, maybe_entity) in &mut tile.inputs {
+                        if let Some(entity) = maybe_entity {
+                            if *entity == input_entity {
+                                *maybe_entity = None;
+                                // TODO - should we mark somehow the tile modified so that next Gate::tick() update outputs?
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Connect outputs of new item
+                for output in &item.outputs {
+                    trace!("Output: port={:?}", output.port);
+                    match output.port {
+                        Port::Single(out_orient) => {
+                            let global_out_orient = ev.orient + out_orient;
                             trace!(
                                 "+ item_orient={:?} local_orient={:?} global_orient={:?}",
                                 ev.orient,
-                                in_orient,
-                                global_in_orient
+                                out_orient,
+                                global_out_orient
                             );
 
-                            if let Some((out_ipos, out_item_orient, out_item_id)) =
-                                board.find(ev.ipos, global_in_orient)
-                            {
+                            if let Some(in_tile) = board.find(ev.ipos, global_out_orient) {
                                 trace!(
-                                    "Found item: ipos={:?} orient={:?} id={:?}",
-                                    out_ipos,
-                                    out_item_orient,
-                                    out_item_id
+                                    "Found tile: ipos={:?} orient={:?} id={:?}",
+                                    in_tile.ipos,
+                                    in_tile.orient,
+                                    in_tile.item_id,
                                 );
 
-                                let out_item = database.get(out_item_id);
+                                let in_item = database.get(in_tile.item_id);
 
                                 // Calculate the orientation of the output, which is the opposite
                                 // of the orientation of the search.
-                                let global_out_orient = global_in_orient.reversed();
-                                trace!("global_out_orient = {:?}", global_out_orient);
+                                let global_in_orient = global_out_orient.reversed();
+                                trace!("global_in_orient = {:?}", global_in_orient);
 
                                 // Calculate the orientation locally for the output port/item
-                                let local_out_orient = global_out_orient - out_item_orient;
-                                trace!("local_out_orient = {:?}", local_out_orient);
+                                let local_in_orient = global_in_orient - in_tile.orient;
+                                trace!("local_in_orient = {:?}", local_in_orient);
 
                                 // Check if the item has an output to connect to
-                                for output in &out_item.outputs {
+                                for input in &in_item.inputs {
                                     trace!("+ output = {:?}", output.port);
 
-                                    if output.port.can_connect_from(local_out_orient) {
+                                    if input.port.can_connect_from(local_in_orient) {
                                         trace!("Connect!");
 
-                                        //board.connect();
+                                        //out_tile.
 
                                         // let mesh: Mesh2dHandle = meshes
                                         //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
@@ -309,12 +362,80 @@ fn update_board(
 
                                 // Beams cannot cross an item, so stop search here
                                 break;
+                            } else {
+                                // Didn't find any tile. If emitter, a beam until board side
+                                board.add_beam(new_tile, )
                             }
                         }
                         Port::PassThrough(pto) => {}
                         Port::Any => {}
                     }
                 }
+
+                // // Connect inputs of new item
+                // for input in &item.inputs {
+                //     trace!("Input: port={:?}", input.port);
+                //     match input.port {
+                //         Port::Single(in_orient) => {
+                //             let global_in_orient = ev.orient + in_orient;
+                //             trace!(
+                //                 "+ item_orient={:?} local_orient={:?} global_orient={:?}",
+                //                 ev.orient,
+                //                 in_orient,
+                //                 global_in_orient
+                //             );
+
+                //             if let Some(out_tile) = board.find(ev.ipos, global_in_orient) {
+                //                 trace!(
+                //                     "Found tile: ipos={:?} orient={:?} id={:?}",
+                //                     out_tile.ipos,
+                //                     out_tile.orient,
+                //                     out_tile.item_id,
+                //                 );
+
+                //                 let out_item = database.get(out_tile.item_id);
+
+                //                 // Calculate the orientation of the output, which is the opposite
+                //                 // of the orientation of the search.
+                //                 let global_out_orient = global_in_orient.reversed();
+                //                 trace!("global_out_orient = {:?}", global_out_orient);
+
+                //                 // Calculate the orientation locally for the output port/item
+                //                 let local_out_orient = global_out_orient - out_tile.orient;
+                //                 trace!("local_out_orient = {:?}", local_out_orient);
+
+                //                 // Check if the item has an output to connect to
+                //                 for output in &out_item.outputs {
+                //                     trace!("+ output = {:?}", output.port);
+
+                //                     if output.port.can_connect_from(local_out_orient) {
+                //                         trace!("Connect!");
+
+                //                         out_tile.
+
+                //                         // let mesh: Mesh2dHandle = meshes
+                //                         //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
+                //                         //     .into();
+                //                         // commands.spawn_bundle(MaterialMesh2dBundle {
+                //                         //     mesh,
+                //                         //     material: beam_materials.add(BeamMaterial {
+                //                         //         color: Color::PURPLE,
+                //                         //         pattern: 0xAAF0,
+                //                         //     }),
+                //                         //     //material: color_materials.add(Color::PURPLE.into()),
+                //                         //     ..default()
+                //                         // });
+                //                     }
+                //                 }
+
+                //                 // Beams cannot cross an item, so stop search here
+                //                 break;
+                //             }
+                //         }
+                //         Port::PassThrough(pto) => {}
+                //         Port::Any => {}
+                //     }
+                // }
             } else {
                 debug!(
                     "Cell at pos {:?} already contains an item, cannot place another one.",
@@ -432,6 +553,24 @@ impl Orient {
         }
     }
 
+    pub fn from_dir(dir: IVec2) -> Self {
+        if dir.x == 0 {
+            assert!(dir.y != 0);
+            if dir.y > 0 {
+                Orient::Top
+            } else {
+                Orient::Bottom
+            }
+        } else {
+            assert!(dir.y == 0);
+            if dir.x > 0 {
+                Orient::Right
+            } else {
+                Orient::Left
+            }
+        }
+    }
+
     pub fn turn_left(&mut self) {
         *self = match self {
             Orient::Top => Orient::Left,
@@ -507,6 +646,165 @@ impl Cell {
     }
 }
 
+enum SplitResult {
+    None,
+    DeleteSelf(Option<Entity>),
+    ShortenSelf(Option<Entity>),
+}
+
+#[derive(Component, Debug)]
+struct Beam {
+    pub start: IVec2,
+    pub end: IVec2,
+    pub output_entity: Entity,        // beam source from output port
+    pub input_entity: Option<Entity>, // beam target, None if not connected to input port
+    pub pattern: BitPattern,
+}
+
+impl Beam {
+    /// Rebuild the mesh for the current beam
+    pub fn rebuild_mesh(&self, mesh: &mut Mesh, cell_size: Vec2) {
+        // Find the size of the beam
+        let (vertices, uvs) = if self.start.x == self.end.x {
+            // vertical
+            assert!(self.end.y != self.start.y);
+            let x = cell_size.x;
+            let y = (self.end.y - self.start.y).abs() as f32 * cell_size.y;
+            let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
+            let uvs = vec![[0., 0.], [0., 1.], [x, 0.], [x, 1.]];
+            (vertices, uvs)
+        } else {
+            // horizontal
+            assert!(self.end.y == self.start.y);
+            let x = (self.end.x - self.start.x).abs() as f32 * cell_size.x;
+            let y = cell_size.y;
+            let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
+            let uvs = vec![[0., 0.], [x, 0.], [0., 1.], [x, 1.]];
+            (vertices, uvs)
+        };
+
+        // Build the mesh
+        let normals = vec![[0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]];
+        let indices = vec![0, 1, 2, 2, 1, 3];
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.set_indices(Some(Indices::U32(indices)));
+    }
+
+    pub fn width(&self) -> i32 {
+        if self.start.x == self.end.x {
+            assert!(self.end.y != self.start.y);
+            (self.end.y - self.start.y).abs()
+        } else {
+            assert!(self.end.y == self.start.y);
+            (self.end.x - self.start.x).abs()
+        }
+    }
+
+    /// Try to split the current beam at the given position.
+    pub fn try_split_at(&mut self, ipos: IVec2, entity: Entity) -> SplitResult {
+        if self.start.x == self.end.x && self.start.x == ipos.x {
+            // vertical
+            assert!(self.start.y != self.end.y);
+            if self.start.y < self.end.y {
+                // going up
+                if ipos.y >= self.start.y && ipos.y <= self.end.y {
+                    // intersect
+                    let prev_end = self.input_entity;
+                    if ipos.y == self.start.y {
+                        // empty self
+                        return SplitResult::DeleteSelf(prev_end);
+                    }
+                    self.end.y = ipos.y;
+                    self.input_entity = Some(entity);
+                    return SplitResult::ShortenSelf(prev_end);
+                } else {
+                    // disjoint
+                    return SplitResult::None;
+                }
+            } else {
+                // going down
+                if ipos.y >= self.end.y && ipos.y <= self.start.y {
+                    // intersect
+                    let prev_end = self.input_entity;
+                    if ipos.y == self.start.y {
+                        // empty self
+                        return SplitResult::DeleteSelf(prev_end);
+                    }
+                    self.end.y = ipos.y;
+                    self.input_entity = Some(entity);
+                    return SplitResult::ShortenSelf(prev_end);
+                } else {
+                    // disjoint
+                    return SplitResult::None;
+                }
+            }
+        } else if self.start.y == self.end.y && self.start.y == ipos.y {
+            // horizontal
+            assert!(self.start.x != self.end.x);
+            if self.start.x < self.end.x {
+                // going right
+                if ipos.x >= self.start.x && ipos.x <= self.end.x {
+                    // intersect
+                    let prev_end = self.input_entity;
+                    if ipos.x == self.start.x {
+                        // empty self
+                        return SplitResult::DeleteSelf(prev_end);
+                    }
+                    self.end.x = ipos.x;
+                    self.input_entity = Some(entity);
+                    return SplitResult::ShortenSelf(prev_end);
+                } else {
+                    // disjoint
+                    return SplitResult::None;
+                }
+            } else {
+                // going left
+                if ipos.x >= self.end.x && ipos.x <= self.start.x {
+                    // intersect
+                    let prev_end = self.input_entity;
+                    if ipos.x == self.start.x {
+                        // empty self
+                        return SplitResult::DeleteSelf(prev_end);
+                    }
+                    self.end.x = ipos.x;
+                    self.input_entity = Some(entity);
+                    return SplitResult::ShortenSelf(prev_end);
+                } else {
+                    // disjoint
+                    return SplitResult::None;
+                }
+            }
+        }
+        SplitResult::None
+    }
+}
+
+/// Placed item on board.
+#[derive(Debug, Clone)]
+struct Tile {
+    item_id: ItemId,
+    ipos: IVec2,
+    orient: Orient,
+    entity: Entity,
+    inputs: Vec<(InputPort, Option<Entity>)>,
+    outputs: Vec<(OutputPort, Option<Entity>)>,
+}
+
+impl Tile {
+    pub fn connect_input_from(&mut self, global_orient: Orient, output_entity: Entity) -> bool {
+        let local_orient = global_orient - self.orient;
+        for (port, maybe_entity) in &mut self.outputs {
+            if port.port.can_connect_from(local_orient) {
+                *maybe_entity = Some(output_entity);
+                return true;
+            }
+        }
+        false
+    }
+}
+
 #[derive(Component, Debug)]
 struct Board {
     size: IVec2,
@@ -514,17 +812,17 @@ struct Board {
     /// Entity for drawning the cell.
     cells: Vec<Entity>,
     /// Entity for an item, if any.
-    items: Vec<Option<(Orient, Entity, ItemId)>>,
+    tiles: Vec<Option<Tile>>,
 }
 
 impl Board {
     pub fn new(size: IVec2) -> Self {
-        let count = size.x as usize * size.y as usize;
+        let area = size.x as usize * size.y as usize;
         Self {
             size,
             cell_size: Vec2::splat(32.),
             cells: vec![], // TEMP; until set_cells() called
-            items: vec![None; count],
+            tiles: vec![None; area],
         }
     }
 
@@ -623,18 +921,49 @@ impl Board {
         orient: Orient,
         entity: Entity,
         item_id: ItemId,
-        _item: &Item,
-    ) {
+        item: &Item,
+    ) -> &mut Tile {
+        // Add item to board
         let index = self.index(ipos);
-        self.items[index] = Some((orient, entity, item_id));
+        self.tiles[index] = Some(Tile {
+            item_id,
+            ipos,
+            orient,
+            entity,
+            inputs: item.inputs.iter().map(|i| (*i, None)).collect(),
+            outputs: item.outputs.iter().map(|o| (*o, None)).collect(),
+        });
+        self.tiles[index].as_mut().unwrap()
+    }
+
+    pub fn try_get_tile(&self, entity: Entity) -> Option<&Tile> {
+        for tile in &self.tiles {
+            if let Some(tile) = tile {
+                if tile.entity == entity {
+                    return Some(tile);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn try_get_tile_mut(&mut self, entity: Entity) -> Option<&mut Tile> {
+        for tile in &mut self.tiles {
+            if let Some(tile) = tile {
+                if tile.entity == entity {
+                    return Some(tile);
+                }
+            }
+        }
+        None
     }
 
     pub fn try_get(&self, ipos: IVec2) -> GetBoard {
         let r = self.rect();
         if ipos.x >= r.0.x && ipos.x <= r.1.x && ipos.y >= r.0.y && ipos.y <= r.1.y {
             let index = self.index(ipos);
-            if let Some(item_tuple) = self.items[index] {
-                GetBoard::Item(item_tuple)
+            if let Some(tile) = &self.tiles[index] {
+                GetBoard::Tile(tile)
             } else {
                 GetBoard::Empty
             }
@@ -644,14 +973,14 @@ impl Board {
     }
 
     /// Find a tile search from an existing starting tile alongside the given orientation.
-    pub fn find(&self, start: IVec2, orient: Orient) -> Option<(IVec2, Orient, ItemId)> {
+    pub fn find(&self, start: IVec2, orient: Orient) -> Option<&Tile> {
         let r = self.rect();
         let index = self.index(start);
-        let (local_orient, _, _) = self.items[index].unwrap();
+        let tile = self.tiles[index].as_ref().unwrap();
 
         // Get the world-space orientation of the search from its local orientation
         // and the orientation of the start tile itself.
-        let global_orient = local_orient + orient;
+        let global_orient = tile.orient + orient;
         let dir = orient.to_dir();
 
         // Check all tiles in the given direction until a connection is made or
@@ -664,18 +993,18 @@ impl Board {
                 // Reached the border of the board, found nothing
                 GetBoard::Outside => return None,
                 // Reached an item
-                GetBoard::Item((local_orient, entity, item_id)) => {
-                    return Some((ipos, local_orient, item_id))
-                }
+                GetBoard::Tile(tile) => return Some(tile),
             }
         }
     }
+
+    pub fn connect(&mut self) {}
 }
 
-enum GetBoard {
+enum GetBoard<'a> {
     Empty,
     Outside,
-    Item((Orient, Entity, ItemId)),
+    Tile(&'a Tile),
 }
 
 #[derive(Component)]
