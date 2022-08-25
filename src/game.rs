@@ -813,9 +813,22 @@ impl Tile {
     }
 
     pub fn connect_input_from(&mut self, global_orient: Orient, output_entity: Entity) -> bool {
+        trace!(
+            "connect_input_from(global_orient={:?}, output_entity={:?})",
+            global_orient,
+            output_entity
+        );
         let local_orient = global_orient - self.orient;
+        trace!(
+            "=> self.orient={:?} local_orient={:?} outputs={}",
+            self.orient,
+            local_orient,
+            self.outputs.len()
+        );
         for (port, maybe_entity) in &mut self.outputs {
+            trace!("+ output: {:?} (entity={:?})", port, maybe_entity);
             if port.port.can_connect_from(local_orient) {
+                trace!("  => CONNECT!");
                 *maybe_entity = Link {
                     entity: Some(output_entity),
                     pattern: BitPattern::default(), // FIXME
@@ -1106,9 +1119,24 @@ impl Board {
                     match self.find(out_tile_ipos, global_orient) {
                         RaycastResult::Found(in_tile_index) => {
                             let in_tile = self.tiles[in_tile_index].as_mut().unwrap();
+                            trace!(
+                                "  => Found(#{}) @ {:?} orient={:?}",
+                                in_tile_index,
+                                in_tile.ipos,
+                                in_tile.orient
+                            );
                             // Try to connect the beam to an input port of the tile found
                             if in_tile.connect_input_from(global_orient, out_tile_entity) {
                                 // Connected; make beam between both entities
+                                trace!("  => connected");
+                                trace!(
+                                    "  Beam: {:?}->{:?} (out_entity={:?}, in_entity={:?}, pattern={:?})",
+                                    out_tile_ipos,
+                                    in_tile.ipos,
+                                    out_tile_entity,
+                                    in_tile.entity,
+                                    state.pattern
+                                );
                                 beams.push(Beam {
                                     start: out_tile_ipos,
                                     end: in_tile.ipos,
@@ -1121,6 +1149,14 @@ impl Board {
                                 queue.push(in_tile_index);
                             } else {
                                 // Not connected; simply make beam from current tile to position before blocker
+                                trace!("  => not connected");
+                                trace!(
+                                    "  Beam: {:?}->{:?} (out_entity={:?}, pattern={:?})",
+                                    out_tile_ipos,
+                                    in_tile.ipos,
+                                    out_tile_entity,
+                                    state.pattern
+                                );
                                 beams.push(Beam {
                                     start: out_tile_ipos,
                                     end: in_tile.ipos,
@@ -1918,6 +1954,12 @@ impl BitManipulator {
 
 impl Gate for BitManipulator {
     fn tick(&self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) -> TickResult {
+        trace!(
+            "BitManipulator::tick(inputs = {:?}, outputs = {:?})",
+            inputs,
+            outputs
+        );
+
         // Only 1 input and 1 output by design
         let input = &inputs[0];
         let output = &mut outputs[0];
@@ -1927,28 +1969,41 @@ impl Gate for BitManipulator {
             input_state
         } else if output.state.is_some() {
             // No input, but there was an output; clear it
+            trace!("Inactive input, clearing output too.");
             output.state = None;
             return TickResult::OutputChanged;
         } else {
             // Neither input not output
+            trace!("Inactive input and output, nothing to do.");
             return TickResult::Idle;
         };
 
+        trace!("input_state = {:?}", input_state);
+
         // Calculate the new output state based on the input one
         let mut new_output_state = None;
+        trace!("BitOp = {:?}", self.op);
         match self.op {
             BitOp::None => (),
             BitOp::Not => {
                 if let Some(color) = input_state.pattern.monochrome() {
                     if let Some(thickness) = input_state.pattern.thickness() {
+                        trace!("mono({:?}) + thickness({:?})", color, thickness);
                         let mut ret = input_state.pattern;
+                        trace!("<= pattern = {:?}", ret.pattern);
                         ret.pattern = !ret.pattern;
+                        trace!("=> pattern = {:?}", ret.pattern);
                         for i in 0..16 {
                             if ret.pattern & (1u16 << i) != 0 {
                                 ret.thicknesses[i] = thickness;
                                 ret.colors[i] = color;
                             }
                         }
+                        trace!(
+                            "ret = {:?} | out_orient = {:?}",
+                            ret,
+                            input_state.in_orient.reversed()
+                        );
                         new_output_state = Some(OutputPortState {
                             pattern: ret,
                             out_orient: input_state.in_orient.reversed(),
@@ -1958,7 +2013,14 @@ impl Gate for BitManipulator {
             }
             BitOp::And => {
                 let mut ret = input_state.pattern;
+                trace!("<= pattern = {:?}", ret.pattern);
                 ret.pattern &= self.pattern;
+                trace!("=> pattern = {:?}", ret.pattern);
+                trace!(
+                    "ret = {:?} | out_orient = {:?}",
+                    ret,
+                    input_state.in_orient.reversed()
+                );
                 new_output_state = Some(OutputPortState {
                     pattern: ret,
                     out_orient: input_state.in_orient.reversed(),
