@@ -1070,7 +1070,7 @@ impl Board {
             let out_tile_ipos = tile.ipos;
             let out_tile_orient = tile.orient;
             let out_tile_entity = tile.entity;
-            trace!("Looping on {} outputs to", outputs.len());
+            trace!("Looping on {} outputs", outputs.len());
             for output in outputs {
                 // Check if port was actived by the tick() call
                 trace!("+ Output: active={}", output.state.is_some());
@@ -1272,7 +1272,7 @@ fn game_setup(
     input_map.insert(KeyCode::E, PlayerAction::TurnItemRight);
     input_map.insert(GamepadButtonType::DPadRight, PlayerAction::TurnItemRight);
     input_map.insert(KeyCode::Space, PlayerAction::PlaceSelectedItem);
-    input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem);
+    //input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem); // this conflicts with Start Game menu entry
     input_map.insert(GamepadButtonType::South, PlayerAction::PlaceSelectedItem);
     input_map.insert(
         UserInput::chord([KeyCode::Tab, KeyCode::LShift]),
