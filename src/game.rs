@@ -284,6 +284,7 @@ fn rebuild_beams(
 
     // Rebuild all beams
     let mut board = board_query.single_mut();
+    let cell_size = board.cell_size();
     if let Some(beams) = board.rebuild_beams(&*database) {
         for beam in beams {
             let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
@@ -293,12 +294,21 @@ fn rebuild_beams(
                 color: beam.pattern.colors[0].into(), // FIXME - multi-color
                 pattern: beam.pattern.pattern as u32,
             });
+            let z = 0.5; // above everything else
+            let orient = Orient::from_dir(beam.end - beam.start); // FIXME - this is the GLOBAL orient!
+            let offset = orient.to_dir().as_vec2() * 0.5;
             commands
                 .spawn_bundle(MaterialMesh2dBundle {
                     mesh,
                     material,
+                    transform: Transform {
+                        translation: ((offset + beam.start.as_vec2()) * cell_size).extend(z),
+                        rotation: orient.into(),
+                        ..default()
+                    },
                     ..default()
                 })
+                .insert(Name::new(format!("beam@{:?}", beam.start)))
                 .insert(beam);
         }
     }
@@ -657,7 +667,7 @@ impl Beam {
         let (vertices, uvs) = if self.start.x == self.end.x {
             // vertical
             assert!(self.end.y != self.start.y);
-            let x = cell_size.x;
+            let x = 2.;
             let y = (self.end.y - self.start.y).abs() as f32 * cell_size.y;
             let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
             let uvs = vec![[0., 0.], [0., 1.], [x, 0.], [x, 1.]];
@@ -666,7 +676,7 @@ impl Beam {
             // horizontal
             assert!(self.end.y == self.start.y);
             let x = (self.end.x - self.start.x).abs() as f32 * cell_size.x;
-            let y = cell_size.y;
+            let y = 2.;
             let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
             let uvs = vec![[0., 0.], [x, 0.], [0., 1.], [x, 1.]];
             (vertices, uvs)
@@ -855,8 +865,8 @@ impl Board {
     /// The iterators yields cell positions by row.
     pub fn grid_iter(&self) -> impl Iterator<Item = IVec2> {
         let r = self.rect();
-        (r.0.y..r.1.y)
-            .flat_map(move |j| (r.0.x..r.1.x).map(move |i| (i, j)))
+        (r.0.y..=r.1.y)
+            .flat_map(move |j| (r.0.x..=r.1.x).map(move |i| (i, j)))
             .map(|(i, j)| IVec2::new(i, j))
     }
 
@@ -868,8 +878,8 @@ impl Board {
     #[inline]
     pub fn rect(&self) -> (IVec2, IVec2) {
         // FIXME - works only on odd size...
-        let half_size = (self.size + 1) / 2;
-        (-half_size + 1, half_size)
+        let half_size = (self.size - 1) / 2;
+        (-half_size, half_size)
     }
 
     #[inline]
@@ -981,6 +991,13 @@ impl Board {
         let r = self.rect();
         if ipos.x >= r.0.x && ipos.x <= r.1.x && ipos.y >= r.0.y && ipos.y <= r.1.y {
             let index = self.index(ipos);
+            trace!(
+                "try_get: r={:?} ipos={:?} index={} len={}",
+                r,
+                ipos,
+                index,
+                self.tiles.len()
+            );
             if self.tiles[index].is_some() {
                 GetBoard::Tile(index)
             } else {
