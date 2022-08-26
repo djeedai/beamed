@@ -26,7 +26,11 @@ impl Plugin for MenuPlugin {
                     .with_system(menu_setup)
                     .with_system(start_background_audio),
             )
-            .add_system_set(SystemSet::on_update(AppState::Menu).with_system(menu_run))
+            .add_system_set(
+                SystemSet::on_update(AppState::Menu)
+                    .with_system(menu_run)
+                    .with_system(bevy_tweening::component_animator_system::<UiColor>),
+            )
             .add_system_set(SystemSet::on_exit(AppState::Menu).with_system(menu_cleanup));
     }
 }
@@ -67,7 +71,7 @@ impl Default for AudioManager {
 
 fn menu_run(
     mut q_menu: Query<(&mut Menu, &ActionState<MenuAction>)>,
-    mut q_animators: Query<(&Button, &mut Animator<Transform>)>,
+    mut q_animators: Query<(&Button, &mut Animator<UiColor>), Without<Menu>>,
     q_buttons: Query<(&Button, &Node, &GlobalTransform)>,
     mut exit: EventWriter<AppExit>,
     audio: Res<KiraAudio>,
@@ -75,7 +79,15 @@ fn menu_run(
     mut app_state: ResMut<State<AppState>>,
     mut cursor_moved_events: EventReader<CursorMoved>,
     mouse_button_input: Res<Input<MouseButton>>,
+    mut seq_completed_reader: EventReader<TweenCompleted>,
+    mut q_bg: Query<&mut Animator<UiColor>, With<Menu>>,
 ) {
+    // Workaround for lack of loopable sequence
+    if seq_completed_reader.iter().last().is_some() {
+        let mut bg_animator = q_bg.single_mut();
+        bg_animator.rewind();
+    }
+
     let (mut menu, action_state) = q_menu.single_mut();
     let prev_sel = menu.selected_index;
     if action_state.just_pressed(MenuAction::SelectNext) {
@@ -104,9 +116,9 @@ fn menu_run(
                     EaseFunction::QuadraticInOut,
                     TweeningType::Once,
                     Duration::from_secs_f32(0.4),
-                    TransformScaleLens {
-                        start: Vec3::new(1.1, 1.1, 1.1),
-                        end: Vec3::ONE,
+                    UiColorLens {
+                        start: MENU_COLORS[1],
+                        end: Color::rgb_u8(48, 48, 48),
                     },
                 );
                 animator.set_tweenable(tween_out);
@@ -116,9 +128,9 @@ fn menu_run(
                     EaseFunction::QuadraticInOut,
                     TweeningType::Once,
                     Duration::from_secs_f32(0.4),
-                    TransformScaleLens {
-                        start: Vec3::ONE,
-                        end: Vec3::new(1.1, 1.1, 1.1),
+                    UiColorLens {
+                        start: Color::rgb_u8(48, 48, 48),
+                        end: MENU_COLORS[1],
                     },
                 );
                 animator.set_tweenable(tween_in);
@@ -139,6 +151,34 @@ fn menu_run(
 #[derive(Component)]
 struct MenuCamera;
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct UiColorLens {
+    /// Start color.
+    pub start: Color,
+    /// End color.
+    pub end: Color,
+}
+
+impl Lens<UiColor> for UiColorLens {
+    fn lerp(&mut self, target: &mut UiColor, ratio: f32) {
+        // Note: Add<f32> for Color affects alpha, but not Mul<f32>. So use Vec4 for
+        // consistency.
+        let start: Vec4 = self.start.into();
+        let end: Vec4 = self.end.into();
+        let value = start.lerp(end, ratio);
+        *target = UiColor(Color::rgb(value.x, value.y, value.z));
+    }
+}
+
+const MENU_COLORS: &'static [Color] = &[
+    Color::rgb(255. / 255., 255. / 255., 255. / 255.),
+    Color::rgb(255. / 255., 0. / 255., 0. / 255.),
+    Color::rgb(255. / 255., 216. / 255., 0. / 255.),
+    Color::rgb(61. / 255., 206. / 255., 0. / 255.),
+    Color::rgb(0. / 255., 148. / 255., 255. / 255.),
+    Color::rgb(178. / 255., 0. / 255., 255. / 255.),
+];
+
 fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     println!("menu_setup");
     commands
@@ -148,7 +188,7 @@ fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     let font = asset_server.load("fonts/ShareTechMono-Regular.ttf");
 
-    //let title_image = asset_server.load("title.png");
+    let title_image = asset_server.load("title.png");
 
     let mut menu = Menu::default();
     //menu.sound_click = asset_server.load("sounds/click4.ogg");
@@ -166,6 +206,30 @@ fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     #[cfg(not(debug_assertions))] // only in release, otherwise annoying with egui inspector
     input_map.insert(MouseButton::Left, MenuAction::ClickButton);
 
+    let menu_bg_color_seq = Sequence::new(MENU_COLORS.windows(2).map(|w| {
+        Tween::new(
+            EaseFunction::QuadraticInOut,
+            TweeningType::Once,
+            Duration::from_secs(3),
+            UiColorLens {
+                start: w[0],
+                end: w[1],
+            },
+        )
+    }))
+    .then(
+        Tween::new(
+            EaseFunction::QuadraticInOut,
+            TweeningType::Once,
+            Duration::from_secs(3),
+            UiColorLens {
+                start: MENU_COLORS[5],
+                end: MENU_COLORS[0],
+            },
+        )
+        .with_completed_event(0),
+    );
+
     commands
         .spawn_bundle(NodeBundle {
             style: Style {
@@ -178,37 +242,40 @@ fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 align_items: AlignItems::Center,
                 align_self: AlignSelf::Center,
                 justify_content: JustifyContent::Center,
-                ..Default::default()
+                ..default()
             },
-            color: UiColor(Color::NONE),
-            ..Default::default()
+            color: UiColor(MENU_COLORS[0]),
+            ..default()
         })
         .insert(Name::new("menu"))
         .insert(menu)
+        .insert(Animator::new(menu_bg_color_seq))
         .insert_bundle(InputManagerBundle::<MenuAction> {
             action_state: ActionState::default(),
             input_map,
         })
         .with_children(|parent| {
             // Title
+            let w = 230.;
+            let h = 80.;
             parent
                 .spawn_bundle(NodeBundle {
                     node: Node {
-                        size: Vec2::new(800., 380.),
+                        size: Vec2::new(w, h),
                     },
                     style: Style {
-                        size: Size::new(Val::Px(800.), Val::Px(380.)),
-                        min_size: Size::new(Val::Px(800.), Val::Px(380.)),
-                        margin: UiRect::all(Val::Px(0.)),
+                        size: Size::new(Val::Px(w), Val::Px(h)),
+                        min_size: Size::new(Val::Px(w), Val::Px(h)),
+                        margin: UiRect::all(Val::Px(64.)),
                         padding: UiRect::all(Val::Px(0.)),
                         align_content: AlignContent::Center,
                         align_items: AlignItems::Center,
                         align_self: AlignSelf::Center,
                         justify_content: JustifyContent::Center,
-                        ..Default::default()
+                        ..default()
                     },
-                    //image: UiImage(title_image),
-                    ..Default::default()
+                    image: UiImage(title_image),
+                    ..default()
                 })
                 .insert(Name::new("title"));
 
@@ -216,41 +283,41 @@ fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             const DELAY_MS: u64 = 200;
 
             let mut start_time_ms = 0;
-            for (index, text) in ["New Game", "Quit"].iter().enumerate() {
+            for (index, (text, color)) in [("New Game", Color::RED), ("Quit", Color::ORANGE)]
+                .iter()
+                .enumerate()
+            {
                 let delay = Delay::new(Duration::from_millis(start_time_ms));
                 start_time_ms += DELAY_MS;
                 let tween_scale = Tween::new(
                     EaseFunction::BounceOut,
                     TweeningType::Once,
                     Duration::from_secs_f32(DURATION_SEC),
-                    TransformScaleLens {
-                        start: Vec3::ZERO,
-                        end: if index == 0 {
-                            Vec3::new(1.1, 1.1, 1.1)
-                        } else {
-                            Vec3::ONE
-                        },
+                    UiColorLens {
+                        start: Color::rgb_u8(48, 48, 48),
+                        end: if index == 0 { MENU_COLORS[1] } else { Color::rgb_u8(48, 48, 48) },
                     },
                 );
                 let seq = delay.then(tween_scale.with_completed_event(0));
+                let w = 200.;
+                let h = 40.;
                 parent
                     .spawn_bundle(NodeBundle {
                         node: Node {
-                            size: Vec2::new(300., 80.),
+                            size: Vec2::new(w, h),
                         },
                         style: Style {
-                            min_size: Size::new(Val::Px(300.), Val::Px(80.)),
-                            margin: UiRect::all(Val::Px(8.)),
-                            padding: UiRect::all(Val::Px(8.)),
+                            min_size: Size::new(Val::Px(w), Val::Px(h)),
+                            margin: UiRect::all(Val::Px(6.)),
+                            padding: UiRect::all(Val::Px(6.)),
                             align_content: AlignContent::Center,
                             align_items: AlignItems::Center,
                             align_self: AlignSelf::Center,
                             justify_content: JustifyContent::Center,
-                            ..Default::default()
+                            ..default()
                         },
-                        color: UiColor(Color::rgb_u8(57, 194, 190)),
-                        transform: Transform::from_scale(Vec3::splat(0.01)),
-                        ..Default::default()
+                        color: UiColor(Color::rgb_u8(48, 48, 48)),
+                        ..default()
                     })
                     .insert(Name::new(format!("button:{}", text)))
                     .insert(Button(index as i32))
@@ -261,15 +328,15 @@ fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                                 text.to_string(),
                                 TextStyle {
                                     font: font.clone(),
-                                    font_size: 48.0,
-                                    color: Color::rgb_u8(32, 32, 32),
+                                    font_size: 32.0,
+                                    color: Color::rgb_u8(192, 192, 192),
                                 },
                             )
                             .with_alignment(TextAlignment {
                                 vertical: VerticalAlign::Center,
                                 horizontal: HorizontalAlign::Center,
                             }),
-                            ..Default::default()
+                            ..default()
                         });
                     });
             }
