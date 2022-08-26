@@ -786,6 +786,8 @@ struct Link {
     pub entity: Option<Entity>,
     /// Active bit pattern at the port.
     pub pattern: BitPattern,
+    /// Global-space orientation of link.
+    pub global_orient: Orient,
 }
 
 /// Placed item on board.
@@ -812,27 +814,36 @@ impl Tile {
         });
     }
 
-    pub fn connect_input_from(&mut self, global_orient: Orient, output_entity: Entity) -> bool {
+    /// Connect to an output entity emitting a beam from a given orientation.
+    pub fn connect_input_from(
+        &mut self,
+        global_orient: Orient,
+        output_entity: Entity,
+        pattern: BitPattern,
+    ) -> bool {
         trace!(
-            "connect_input_from(global_orient={:?}, output_entity={:?})",
+            "connect_input_from(global_orient={:?}, output_entity={:?}, pattern={:?})",
             global_orient,
-            output_entity
+            output_entity,
+            pattern,
         );
         let local_orient = global_orient - self.orient;
         trace!(
-            "=> self.orient={:?} local_orient={:?} outputs={}",
+            "=> self.orient={:?} local_orient={:?} self.inputs={}",
             self.orient,
             local_orient,
-            self.outputs.len()
+            self.inputs.len()
         );
-        for (port, maybe_entity) in &mut self.outputs {
-            trace!("+ output: {:?} (entity={:?})", port, maybe_entity);
+        for (port, link) in &mut self.inputs {
+            trace!("+ input: {:?} (link={:?})", port, link);
             if port.port.can_connect_from(local_orient) {
                 trace!("  => CONNECT!");
-                *maybe_entity = Link {
+                *link = Link {
                     entity: Some(output_entity),
-                    pattern: BitPattern::default(), // FIXME
+                    pattern,
+                    global_orient: local_orient + self.orient,
                 };
+                trace!("  => Link = {:?}", link);
                 return true;
             }
         }
@@ -1084,29 +1095,54 @@ impl Board {
 
             // Tick the item at the tile to propagate beam signals
             let item = database.get(tile.item_id);
-            let inputs: Vec<InputBeam> = item
+            let inputs: Vec<InputBeam> = tile
                 .inputs
                 .iter()
-                .map(|port| InputBeam { port, state: None })
+                .map(|(port, link)| InputBeam {
+                    port,
+                    state: if let Some(entity) = link.entity {
+                        Some(InputPortState {
+                            pattern: link.pattern,
+                            in_orient: link.global_orient,
+                        })
+                    } else {
+                        None
+                    },
+                })
                 .collect();
-            let mut outputs: Vec<OutputBeam> = item
+            let mut outputs: Vec<OutputBeam> = tile
                 .outputs
                 .iter()
-                .map(|port| OutputBeam { port, state: None })
+                .map(|(port, link)| OutputBeam {
+                    port,
+                    state: if let Some(entity) = link.entity {
+                        Some(OutputPortState {
+                            pattern: link.pattern,
+                            out_orient: link.global_orient,
+                        })
+                    } else {
+                        None
+                    },
+                })
                 .collect();
             item.tick(&inputs, &mut outputs);
 
-            // Check output ports after ticking
             let out_tile_ipos = tile.ipos;
             let out_tile_orient = tile.orient;
             let out_tile_entity = tile.entity;
+
+            // Disconnect outputs from tile by losing the port reference, to allow mutating the tile
+            // FIXME - refactor with tick() taking the immutable port decription as & separately from the mutable state as &mut to avoid this!
+            let mut outputs: Vec<_> = outputs.iter().map(|ob| ob.state).collect();
+
+            // Check output ports after ticking
             trace!("Looping on {} outputs", outputs.len());
-            for output in outputs {
+            for output_state in outputs {
                 // Check if port was actived by the tick() call
-                trace!("+ Output: active={}", output.state.is_some());
-                if let Some(state) = &output.state {
+                trace!("+ Output: active={}", output_state.is_some());
+                if let Some(state) = &output_state {
                     // Output is active, create a beam and try to connect to an input
-                    trace!("  State: {:?}", output.state);
+                    trace!("  State: {:?}", output_state);
 
                     // Raycast from the output port in its direction to find another tile
                     let global_orient = out_tile_orient + state.out_orient;
@@ -1126,7 +1162,11 @@ impl Board {
                                 in_tile.orient
                             );
                             // Try to connect the beam to an input port of the tile found
-                            if in_tile.connect_input_from(global_orient, out_tile_entity) {
+                            if in_tile.connect_input_from(
+                                global_orient,
+                                out_tile_entity,
+                                state.pattern,
+                            ) {
                                 // Connected; make beam between both entities
                                 trace!("  => connected");
                                 trace!(
@@ -1251,7 +1291,7 @@ fn game_setup(
             vec![OutputPort {
                 port: PassThroughOrient::Horizontal.into(),
             }],
-            Box::new(BitManipulator::new(0xF0F0, BitOp::None)) as Box<dyn Gate>,
+            Box::new(BitManipulator::new(0xF0F0, BitOp::And)) as Box<dyn Gate>,
         ),
         (
             "inverter",
