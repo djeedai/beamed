@@ -1033,15 +1033,8 @@ impl Board {
     }
 
     /// Find a tile search from an existing starting tile alongside the given orientation.
-    pub fn find(&self, start: IVec2, orient: Orient) -> RaycastResult {
-        let r = self.rect();
-        let index = self.index(start);
-        let tile = self.tiles[index].as_ref().unwrap();
-
-        // Get the world-space orientation of the search from its local orientation
-        // and the orientation of the start tile itself.
-        let global_orient = tile.orient + orient;
-        let dir = orient.to_dir();
+    pub fn find(&self, start: IVec2, global_orient: Orient) -> RaycastResult {
+        let dir = global_orient.to_dir();
 
         // Check all tiles in the given direction until a connection is made or
         // the border of the board is reached without finding one.
@@ -1103,7 +1096,7 @@ impl Board {
                     state: if let Some(entity) = link.entity {
                         Some(InputPortState {
                             pattern: link.pattern,
-                            in_orient: link.global_orient,
+                            in_orient: link.global_orient - tile.orient,
                         })
                     } else {
                         None
@@ -1118,7 +1111,7 @@ impl Board {
                     state: if let Some(entity) = link.entity {
                         Some(OutputPortState {
                             pattern: link.pattern,
-                            out_orient: link.global_orient,
+                            out_orient: link.global_orient - tile.orient,
                         })
                     } else {
                         None
@@ -1145,10 +1138,11 @@ impl Board {
                     trace!("  State: {:?}", output_state);
 
                     // Raycast from the output port in its direction to find another tile
-                    let global_orient = out_tile_orient + state.out_orient;
+                    let local_orient = state.out_orient;
+                    let global_orient = out_tile_orient + local_orient;
                     trace!(
                         "  Orient: local={:?} tile={:?} global={:?}",
-                        state.out_orient,
+                        local_orient,
                         out_tile_orient,
                         global_orient
                     );
@@ -1593,7 +1587,7 @@ struct OutputPort {
 #[derive(Debug, Clone, Copy)]
 struct InputPortState {
     pattern: BitPattern,
-    in_orient: Orient,
+    in_orient: Orient, // local
 }
 
 /// Input port of a tile and its state.
@@ -1608,7 +1602,7 @@ struct InputBeam<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OutputPortState {
     pattern: BitPattern,
-    out_orient: Orient,
+    out_orient: Orient, // local
 }
 
 /// Output port of a tile and its state.
