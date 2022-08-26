@@ -35,6 +35,7 @@ impl Plugin for GamePlugin {
             .add_event::<ScoreEvent>()
             .add_event::<PlaceItemEvent>()
             .add_event::<RebuildBeamsEvent>()
+            .add_event::<BoardCompletedEvent>()
             .register_type::<Cursor>()
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
@@ -57,7 +58,8 @@ impl Plugin for GamePlugin {
                 SystemSet::on_update(AppState::InGame)
                     .with_system(update_cursor)
                     .with_system(update_board.after(update_cursor))
-                    .with_system(rebuild_beams.after(update_board)),
+                    .with_system(rebuild_beams.after(update_board))
+                    .with_system(change_level.after(rebuild_beams)),
             );
     }
 }
@@ -86,6 +88,9 @@ struct PlaceItemEvent {
 
 #[derive(Debug)]
 struct RebuildBeamsEvent;
+
+#[derive(Debug)]
+struct BoardCompletedEvent;
 
 fn update_cursor(
     board_query: Query<&Board>,
@@ -271,6 +276,7 @@ fn rebuild_beams(
     mut rebuild_beams_event_reader: EventReader<RebuildBeamsEvent>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut beam_materials: ResMut<Assets<BeamMaterial>>,
+    mut board_completed_event_writer: EventWriter<BoardCompletedEvent>,
 ) {
     // Drain all event and early out if none
     if rebuild_beams_event_reader.iter().last().is_none() {
@@ -311,6 +317,10 @@ fn rebuild_beams(
                 .insert(Name::new(format!("beam@{:?}", beam.start)))
                 .insert(beam);
         }
+    }
+
+    if board.completed() {
+        board_completed_event_writer.send(BoardCompletedEvent);
     }
 
     // // Connect outputs of new item
@@ -445,6 +455,14 @@ fn rebuild_beams(
     //         Port::Any => {}
     //     }
     // }
+}
+
+fn change_level(mut board_completed_event_reader: EventReader<BoardCompletedEvent>) {
+    if board_completed_event_reader.iter().last().is_none() {
+        return;
+    }
+
+    info!("Changing level to: ...");
 }
 
 #[derive(Component)]
@@ -866,6 +884,8 @@ struct Board {
     cells: Vec<Entity>,
     /// Entity for an item, if any.
     tiles: Vec<Option<Tile>>,
+    ///
+    success: bool,
 }
 
 impl Board {
@@ -876,6 +896,7 @@ impl Board {
             cell_size: Vec2::splat(32.),
             cells: vec![], // TEMP; until set_cells() called
             tiles: vec![None; area],
+            success: false,
         }
     }
 
@@ -954,6 +975,11 @@ impl Board {
         } else {
             None
         }
+    }
+
+    #[inline]
+    pub fn completed(&self) -> bool {
+        self.success
     }
 
     fn index(&self, ipos: IVec2) -> usize {
@@ -1062,6 +1088,8 @@ impl Board {
         let mut beams = vec![];
         let mut queue = vec![];
 
+        self.success = false;
+
         // Loop over all existing tiles placed on the board
         for index in 0..self.tiles.len() {
             if let Some(tile) = &mut self.tiles[index] {
@@ -1118,7 +1146,9 @@ impl Board {
                     },
                 })
                 .collect();
-            item.tick(&inputs, &mut outputs);
+            if matches!(item.tick(&inputs, &mut outputs), TickResult::Win) {
+                self.success = true;
+            }
 
             let out_tile_ipos = tile.ipos;
             let out_tile_orient = tile.orient;
@@ -1172,13 +1202,15 @@ impl Board {
                                     state.pattern
                                 );
                                 let end = in_tile.ipos - global_orient.to_dir();
-                                beams.push(Beam {
-                                    start: out_tile_ipos,
-                                    end,
-                                    output_entity: out_tile_entity,
-                                    input_entity: Some(in_tile.entity),
-                                    pattern: state.pattern,
-                                });
+                                if end != out_tile_ipos {
+                                    beams.push(Beam {
+                                        start: out_tile_ipos,
+                                        end,
+                                        output_entity: out_tile_entity,
+                                        input_entity: Some(in_tile.entity),
+                                        pattern: state.pattern,
+                                    });
+                                }
 
                                 // Since the new tile connected, in turns it must be processed
                                 queue.push(in_tile_index);
@@ -1193,13 +1225,15 @@ impl Board {
                                     state.pattern
                                 );
                                 let end = in_tile.ipos - global_orient.to_dir();
-                                beams.push(Beam {
-                                    start: out_tile_ipos,
-                                    end,
-                                    output_entity: out_tile_entity,
-                                    input_entity: None,
-                                    pattern: state.pattern,
-                                });
+                                if end != out_tile_ipos {
+                                    beams.push(Beam {
+                                        start: out_tile_ipos,
+                                        end,
+                                        output_entity: out_tile_entity,
+                                        input_entity: None,
+                                        pattern: state.pattern,
+                                    });
+                                }
                             }
                         }
                         RaycastResult::NotFound(last_ipos) => {
@@ -1212,13 +1246,15 @@ impl Board {
                                 state.pattern
                             );
                             // No endpoint tile; only create beam, until the board side
-                            beams.push(Beam {
-                                start: out_tile_ipos,
-                                end: last_ipos,
-                                output_entity: out_tile_entity,
-                                input_entity: None,
-                                pattern: state.pattern,
-                            });
+                            if last_ipos != out_tile_ipos {
+                                beams.push(Beam {
+                                    start: out_tile_ipos,
+                                    end: last_ipos,
+                                    output_entity: out_tile_entity,
+                                    input_entity: None,
+                                    pattern: state.pattern,
+                                });
+                            }
                         }
                     }
                 }
@@ -1269,6 +1305,7 @@ fn game_setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut fixup_images: ResMut<FixupImages>,
     mut database: ResMut<ItemDatabase>,
+    mut place_item_event_writer: EventWriter<PlaceItemEvent>,
 ) {
     println!("game_setup");
 
@@ -1279,6 +1316,15 @@ fn game_setup(
     // Populate item database
     for (id, name, inputs, outputs, gate) in [
         (
+            "sink",
+            "Sink",
+            vec![InputPort {
+                port: PassThroughOrient::Any.into(),
+            }],
+            vec![],
+            Box::new(Sink::new(BitPattern::simple(BitColor::Red, 0xF0F0, 1))) as Box<dyn Gate>,
+        ),
+        (
             "halver",
             "Halver",
             vec![InputPort {
@@ -1287,7 +1333,7 @@ fn game_setup(
             vec![OutputPort {
                 port: PassThroughOrient::Horizontal.into(),
             }],
-            Box::new(BitManipulator::new(0xF0F0, BitOp::And)) as Box<dyn Gate>,
+            Box::new(BitManipulator::new(0xF0F0, BitOp::And)),
         ),
         (
             "inverter",
@@ -1406,11 +1452,11 @@ fn game_setup(
     // Inventory
     let mut children = vec![];
     for (index, (maybe_item, count)) in [
-        (Some(ItemId(0)), 3),
-        (Some(ItemId(1)), 1),
+        (Some(ItemId(1)), 3),
+        (Some(ItemId(2)), 1),
         (None, 0),
-        (Some(ItemId(2)), 2),
-        (Some(ItemId(3)), 1),
+        (Some(ItemId(3)), 2),
+        (Some(ItemId(4)), 1),
     ]
     .iter()
     .enumerate()
@@ -1494,6 +1540,13 @@ fn game_setup(
         .insert(board)
         .insert(Name::new("board"))
         .push_children(&children[..]);
+
+    // Place sink(s) for current level
+    place_item_event_writer.send(PlaceItemEvent {
+        item_id: ItemId(0), // Sink
+        ipos: IVec2::new(0, 3),
+        orient: Orient::Top,
+    });
 }
 
 #[derive(Default)]
@@ -1523,6 +1576,7 @@ fn fixup_images(mut fixup_images: ResMut<FixupImages>, mut images: ResMut<Assets
 enum TickResult {
     Idle,
     OutputChanged,
+    Win, // only for Sink
 }
 
 trait Gate: Send + Sync + 'static {
@@ -1626,8 +1680,8 @@ struct Item {
 
 impl Item {
     #[inline]
-    pub fn tick(&self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) {
-        self.gate.tick(inputs, outputs);
+    pub fn tick(&self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) -> TickResult {
+        self.gate.tick(inputs, outputs)
     }
 }
 
@@ -1970,6 +2024,31 @@ impl Gate for Emitter {
         }
 
         TickResult::OutputChanged
+    }
+}
+
+#[derive(Component, Default, Debug)]
+struct Sink {
+    pattern: BitPattern,
+}
+
+impl Sink {
+    pub fn new(pattern: BitPattern) -> Self {
+        Self { pattern }
+    }
+}
+
+impl Gate for Sink {
+    fn tick(&self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) -> TickResult {
+        let input = inputs[0];
+
+        if let Some(input_state) = &input.state {
+            if input_state.pattern == self.pattern {
+                return TickResult::Win;
+            }
+        }
+
+        TickResult::Idle
     }
 }
 
