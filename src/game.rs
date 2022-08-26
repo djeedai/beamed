@@ -817,7 +817,7 @@ impl Tile {
     /// Connect to an output entity emitting a beam from a given orientation.
     pub fn connect_input_from(
         &mut self,
-        global_orient: Orient,
+        global_orient: Orient, // incoming orient
         output_entity: Entity,
         pattern: BitPattern,
     ) -> bool {
@@ -1163,7 +1163,7 @@ impl Board {
                             );
                             // Try to connect the beam to an input port of the tile found
                             if in_tile.connect_input_from(
-                                global_orient,
+                                global_orient.reversed(),
                                 out_tile_entity,
                                 state.pattern,
                             ) {
@@ -2077,16 +2077,34 @@ impl Gate for BitManipulator {
         // Check if state changed
         if let Some(prev_output_state) = &output.state {
             if let Some(new_output_state) = &new_output_state {
+                // old = Some, new = Some
+                trace!(
+                    "output: old = {:?} | new = {:?} | changed = {}",
+                    prev_output_state,
+                    new_output_state,
+                    prev_output_state == new_output_state
+                );
                 if prev_output_state == new_output_state {
+                    trace!("Idle: old == new == {:?}", prev_output_state);
                     return TickResult::Idle;
                 }
+                output.state = Some(*new_output_state);
+                trace!("OutputChanged: output => {:?}", output.state);
+                return TickResult::OutputChanged;
+            } else {
+                // old = Some, new = None
+                output.state = None;
+                trace!("OutputChanged: output => None");
+                return TickResult::OutputChanged;
             }
+        } else if new_output_state.is_some() {
+            // old = None, new = Some
             output.state = new_output_state;
-            return TickResult::OutputChanged;
-        } else if new_output_state.is_none() {
-            output.state = None;
+            trace!("OutputChanged: output => {:?}", output.state);
             return TickResult::OutputChanged;
         } else {
+            // old = None, new = None
+            trace!("Idle: old == new == None");
             return TickResult::Idle;
         }
     }
