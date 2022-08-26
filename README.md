@@ -1,7 +1,7 @@
 # 🔦 Beamed
 
 [![MIT/Apache 2.0](https://img.shields.io/badge/License-MIT%2FApache-blue.svg)](./LICENSE)
-[![Rust](https://github.com/djeedai/combine/workflows/CI/badge.svg)](https://github.com/djeedai/combine/actions)
+[![CI](https://github.com/djeedai/combine/actions/workflows/ci.yaml/badge.svg)](https://github.com/djeedai/combine/actions/workflows/ci.yaml)
 [![Play](https://img.shields.io/badge/PlayOnline-itch.io-ff69b4)](https://djee.itch.io/beamed)
 
 ![Beamed](media/cover.png)
