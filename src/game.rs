@@ -1171,9 +1171,10 @@ impl Board {
                                     in_tile.entity,
                                     state.pattern
                                 );
+                                let end = in_tile.ipos - global_orient.to_dir();
                                 beams.push(Beam {
                                     start: out_tile_ipos,
-                                    end: in_tile.ipos,
+                                    end,
                                     output_entity: out_tile_entity,
                                     input_entity: Some(in_tile.entity),
                                     pattern: state.pattern,
@@ -1191,9 +1192,10 @@ impl Board {
                                     out_tile_entity,
                                     state.pattern
                                 );
+                                let end = in_tile.ipos - global_orient.to_dir();
                                 beams.push(Beam {
                                     start: out_tile_ipos,
-                                    end: in_tile.ipos,
+                                    end,
                                     output_entity: out_tile_entity,
                                     input_entity: None,
                                     pattern: state.pattern,
