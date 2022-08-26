@@ -1,1 +1,6 @@
 /target
+
+/wasm/assets
+/wasm/*.zip
+/wasm/*.js
+/wasm/*.wasm
