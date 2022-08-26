@@ -507,9 +507,9 @@ impl Cursor {
 
     pub fn turn_to(&mut self, start: Quat, dir: i32, animator: &mut Animator<Transform>) {
         if dir < 0 {
-            self.orient.turn_right();
-        } else if dir > 0 {
             self.orient.turn_left();
+        } else if dir > 0 {
+            self.orient.turn_right();
         }
         let lens = TransformRotationLens {
             start,
@@ -537,9 +537,9 @@ impl Orient {
     pub fn to_angle(&self) -> f32 {
         match self {
             Orient::Top => 0.,
-            Orient::Right => PI / 2.,
+            Orient::Right => -PI / 2.,
             Orient::Bottom => PI,
-            Orient::Left => 3. * PI / 2.,
+            Orient::Left => PI / 2.,
         }
     }
 
