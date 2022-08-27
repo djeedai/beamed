@@ -14,15 +14,12 @@ use bevy::{
     sprite::{Material2dPlugin, MaterialMesh2dBundle, Mesh2dHandle},
     window::WindowId,
 };
-//use bevy_atmosphere::*;
 use bevy_kira_audio::{
     Audio as KiraAudio, AudioChannel as KiraAudioChannel, AudioPlugin as KiraAudioPlugin,
     AudioSource as KiraAudioSource, PlaybackState,
 };
 use bevy_tweening::{lens::*, *};
-//use heron::prelude::*;
 use leafwing_input_manager::prelude::*;
-//use rand::prelude::*;
 use std::{f32::consts::PI, time::Duration, usize};
 
 pub struct GamePlugin;
@@ -41,10 +38,6 @@ impl Plugin for GamePlugin {
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
             .init_resource::<ItemDatabase>()
-            // .add_plugin(bevy_atmosphere::AtmospherePlugin {
-            //     dynamic: true,
-            //     ..default()
-            // })
             .add_plugin(InputManagerPlugin::<PlayerAction>::default())
             .add_system_set_to_stage(
                 CoreStage::First,
@@ -403,139 +396,6 @@ fn rebuild_beams(
     if board.completed() {
         board_completed_event_writer.send(BoardCompletedEvent);
     }
-
-    // // Connect outputs of new item
-    // for output in &item.outputs {
-    //     trace!("Output: port={:?}", output.port);
-    //     match output.port {
-    //         Port::Single(out_orient) => {
-    //             let global_out_orient = ev.orient + out_orient;
-    //             trace!(
-    //                 "+ item_orient={:?} local_orient={:?} global_orient={:?}",
-    //                 ev.orient,
-    //                 out_orient,
-    //                 global_out_orient
-    //             );
-
-    //             if let Some(in_tile) = board.find(ev.ipos, global_out_orient) {
-    //                 trace!(
-    //                     "Found tile: ipos={:?} orient={:?} id={:?}",
-    //                     in_tile.ipos,
-    //                     in_tile.orient,
-    //                     in_tile.item_id,
-    //                 );
-
-    //                 let in_item = database.get(in_tile.item_id);
-
-    //                 // Calculate the orientation of the output, which is the opposite
-    //                 // of the orientation of the search.
-    //                 let global_in_orient = global_out_orient.reversed();
-    //                 trace!("global_in_orient = {:?}", global_in_orient);
-
-    //                 // Calculate the orientation locally for the output port/item
-    //                 let local_in_orient = global_in_orient - in_tile.orient;
-    //                 trace!("local_in_orient = {:?}", local_in_orient);
-
-    //                 // Check if the item has an output to connect to
-    //                 for input in &in_item.inputs {
-    //                     trace!("+ output = {:?}", output.port);
-
-    //                     if input.port.can_connect_from(local_in_orient) {
-    //                         trace!("Connect!");
-
-    //                         //out_tile.
-
-    //                         // let mesh: Mesh2dHandle = meshes
-    //                         //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
-    //                         //     .into();
-    //                         // commands.spawn_bundle(MaterialMesh2dBundle {
-    //                         //     mesh,
-    //                         //     material: beam_materials.add(BeamMaterial {
-    //                         //         color: Color::PURPLE,
-    //                         //         pattern: 0xAAF0,
-    //                         //     }),
-    //                         //     //material: color_materials.add(Color::PURPLE.into()),
-    //                         //     ..default()
-    //                         // });
-    //                     }
-    //                 }
-
-    //                 // Beams cannot cross an item, so stop search here
-    //                 break;
-    //             } else {
-    //                 // Didn't find any tile. If emitter, a beam until board side
-    //                 board.add_beam(new_tile)
-    //             }
-    //         }
-    //         Port::PassThrough(pto) => {}
-    //         Port::Any => {}
-    //     }
-    // }
-
-    // // Connect inputs of new item
-    // for input in &item.inputs {
-    //     trace!("Input: port={:?}", input.port);
-    //     match input.port {
-    //         Port::Single(in_orient) => {
-    //             let global_in_orient = ev.orient + in_orient;
-    //             trace!(
-    //                 "+ item_orient={:?} local_orient={:?} global_orient={:?}",
-    //                 ev.orient,
-    //                 in_orient,
-    //                 global_in_orient
-    //             );
-
-    //             if let Some(out_tile) = board.find(ev.ipos, global_in_orient) {
-    //                 trace!(
-    //                     "Found tile: ipos={:?} orient={:?} id={:?}",
-    //                     out_tile.ipos,
-    //                     out_tile.orient,
-    //                     out_tile.item_id,
-    //                 );
-
-    //                 let out_item = database.get(out_tile.item_id);
-
-    //                 // Calculate the orientation of the output, which is the opposite
-    //                 // of the orientation of the search.
-    //                 let global_out_orient = global_in_orient.reversed();
-    //                 trace!("global_out_orient = {:?}", global_out_orient);
-
-    //                 // Calculate the orientation locally for the output port/item
-    //                 let local_out_orient = global_out_orient - out_tile.orient;
-    //                 trace!("local_out_orient = {:?}", local_out_orient);
-
-    //                 // Check if the item has an output to connect to
-    //                 for output in &out_item.outputs {
-    //                     trace!("+ output = {:?}", output.port);
-
-    //                     if output.port.can_connect_from(local_out_orient) {
-    //                         trace!("Connect!");
-
-    //                         out_tile.
-
-    //                         // let mesh: Mesh2dHandle = meshes
-    //                         //     .add(shape::Quad::new(Vec2::new(140., 4.)).into())
-    //                         //     .into();
-    //                         // commands.spawn_bundle(MaterialMesh2dBundle {
-    //                         //     mesh,
-    //                         //     material: beam_materials.add(BeamMaterial {
-    //                         //         color: Color::PURPLE,
-    //                         //         pattern: 0xAAF0,
-    //                         //     }),
-    //                         //     //material: color_materials.add(Color::PURPLE.into()),
-    //                         //     ..default()
-    //                         // });
-    //                     }
-    //                 }
-
-    //                 // Beams cannot cross an item, so stop search here
-    //                 break;
-    //             }
-    //         }
-    //         Port::PassThrough(pto) => {}
-    //         Port::Any => {}
-    //     }
-    // }
 }
 
 fn change_level(mut board_completed_event_reader: EventReader<BoardCompletedEvent>) {
@@ -543,7 +403,7 @@ fn change_level(mut board_completed_event_reader: EventReader<BoardCompletedEven
         return;
     }
 
-    info!("Changing level to: ...");
+    info!("Changing level to: ..."); // TODO
 }
 
 #[derive(Component)]
