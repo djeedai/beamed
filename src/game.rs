@@ -38,6 +38,7 @@ impl Plugin for GamePlugin {
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
             .init_resource::<ItemDatabase>()
+            .init_resource::<HelpSystem>()
             .add_plugin(InputManagerPlugin::<PlayerAction>::default())
             .add_system_set_to_stage(
                 CoreStage::First,
@@ -110,6 +111,8 @@ fn update_cursor(
     database: Res<ItemDatabase>,
     mut place_item_event_writer: EventWriter<PlaceItemEvent>,
     mut remove_item_event_writer: EventWriter<RemoveItemEvent>,
+    help_system: Res<HelpSystem>,
+    mut help_query: Query<&mut Text>,
 ) {
     let board = board_query.single();
     let size = board.size();
@@ -160,6 +163,31 @@ fn update_cursor(
         let (mut transform, mut cursor) = inventory_cursor_query.single_mut();
         if let Some(index) = inventory.selected_index() {
             transform.translation.x = index as f32 * board.cell_size().x;
+
+            let (maybe_item_id, item_entity) = inventory.slots()[index];
+            if let Some(item_id) = maybe_item_id {
+                let item = database.get(item_id);
+                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_title) {
+                    text.sections[0].value = item.name.clone();
+                }
+                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_desc) {
+                    text.sections[0].value = item.desc.clone();
+                }
+            } else {
+                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_title) {
+                    text.sections[0].value = String::new();
+                }
+                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_desc) {
+                    text.sections[0].value = String::new();
+                }
+            }
+        } else {
+            if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_title) {
+                text.sections[0].value = String::new();
+            }
+            if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_desc) {
+                text.sections[0].value = String::new();
+            }
         }
     }
 
@@ -1251,6 +1279,20 @@ struct AudioRes {
     sound_move_cursor: Handle<KiraAudioSource>,
 }
 
+struct HelpSystem {
+    inventory_item_title: Entity,
+    inventory_item_desc: Entity,
+}
+
+impl Default for HelpSystem {
+    fn default() -> Self {
+        Self {
+            inventory_item_title: Entity::from_raw(u32::MAX),
+            inventory_item_desc: Entity::from_raw(u32::MAX),
+        }
+    }
+}
+
 fn game_setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -1258,6 +1300,7 @@ fn game_setup(
     sfx_audio: Res<KiraAudioChannel<SfxAudio>>,
     windows: Res<Windows>,
     mut audio_res: ResMut<AudioRes>,
+    mut help_system: ResMut<HelpSystem>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut fixup_images: ResMut<FixupImages>,
@@ -1270,11 +1313,14 @@ fn game_setup(
 
     //audio_res.sound_move_cursor = asset_server.load("sounds/move_cursor.ogg");
 
+    let font = asset_server.load("fonts/ShareTechMono-Regular.ttf");
+
     // Populate item database
-    for (id, name, inputs, outputs, gate) in [
+    for (id, name, desc, inputs, outputs, gate) in [
         (
             "sink",
             "Sink",
+            "The final output for all beams.",
             vec![InputPort {
                 port: PassThroughOrient::Any.into(),
             }],
@@ -1284,6 +1330,7 @@ fn game_setup(
         (
             "halver",
             "Halver",
+            "Halve the beam signal, producing a dashed pattern.",
             vec![InputPort {
                 port: PassThroughOrient::Horizontal.into(),
             }],
@@ -1295,6 +1342,7 @@ fn game_setup(
         (
             "inverter",
             "Inverter",
+            "Invert the beam signal.",
             vec![InputPort {
                 port: PassThroughOrient::Horizontal.into(),
             }],
@@ -1306,6 +1354,7 @@ fn game_setup(
         (
             "filter_red",
             "Filter",
+            "Filter out all the colors of the input beams except the given one, producing a monochromatic beam on the output.",
             vec![InputPort {
                 port: PassThroughOrient::Any.into(),
             }],
@@ -1317,6 +1366,7 @@ fn game_setup(
         (
             "emit",
             "Emitter",
+            "Emit a single continuous monochromatic beam.",
             vec![],
             vec![OutputPort {
                 port: Orient::Top.into(),
@@ -1326,6 +1376,7 @@ fn game_setup(
         // (
         //     "multi_emit",
         //     "Multi-Emitter",
+        //     "",
         //     vec![],
         //     vec![OutputPort {
         //         port: Port::Any,
@@ -1334,7 +1385,7 @@ fn game_setup(
     ] {
         let path = format!("textures/{}.png", id);
         let image = asset_server.load(&path);
-        database.add(name, image, inputs, outputs, gate);
+        database.add(name, desc, image, inputs, outputs, gate);
     }
 
     // Main camera
@@ -1409,17 +1460,15 @@ fn game_setup(
     let mut board = Board::new(size);
 
     // Inventory
-    let mut children = vec![];
-    for (index, (maybe_item, count)) in [
+    let initial_inventory = [
         (Some(ItemId(1)), 3),
         (Some(ItemId(2)), 1),
         (None, 0),
         (Some(ItemId(3)), 2),
         (Some(ItemId(4)), 1),
-    ]
-    .iter()
-    .enumerate()
-    {
+    ];
+    let mut children = vec![];
+    for (index, (maybe_item, count)) in initial_inventory.iter().enumerate() {
         let count = if maybe_item.is_none() { 0 } else { *count };
         let pos = Vec3::new(index as f32 * board.cell_size().x, 0., 0.);
         let texture = if let Some(item_id) = maybe_item {
@@ -1475,6 +1524,101 @@ fn game_setup(
         .insert(inventory)
         .insert(Name::new("inventory"))
         .push_children(&children[..]);
+
+    // Help system
+    commands
+        .spawn_bundle(NodeBundle {
+            node: Node {
+                size: Vec2::new(600., 250.),
+            },
+            style: Style {
+                position_type: PositionType::Absolute, // avoid interaction with other UI items if any
+                flex_direction: FlexDirection::ColumnReverse, // top to bottom
+                justify_content: JustifyContent::FlexStart, // align top
+                position: UiRect {
+                    left: Val::Percent(30.0),
+                    right: Val::Percent(30.0),
+                    bottom: Val::Px(30.),
+                    ..default()
+                },
+                ..default()
+            },
+            color: UiColor(Color::NONE),
+            transform: Transform::from_translation(Vec3::new(0., -5. * board.cell_size().y, 0.)),
+            ..default()
+        })
+        .insert(Name::new("help_system"))
+        .with_children(|parent| {
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        size: Size::new(Val::Auto, Val::Px(20.0)),
+                        flex_direction: FlexDirection::ColumnReverse, // top to bottom
+                        align_items: AlignItems::FlexStart,           // align content top
+                        ..default()
+                    },
+                    color: UiColor(Color::NONE),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    help_system.inventory_item_title = parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                size: Size::new(Val::Auto, Val::Px(20.0)),
+                                ..default()
+                            },
+                            text: Text::from_section(
+                                initial_inventory[0]
+                                    .0
+                                    .as_ref()
+                                    .map(|item_id| database.get(*item_id).name.clone())
+                                    .unwrap_or("".to_string()),
+                                TextStyle {
+                                    font: font.clone(),
+                                    font_size: 18.0,
+                                    color: Color::WHITE,
+                                },
+                            ),
+                            ..default()
+                        })
+                        .id();
+                });
+
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        size: Size::new(Val::Auto, Val::Px(50.0)),
+                        flex_direction: FlexDirection::ColumnReverse, // top to bottom
+                        align_items: AlignItems::FlexStart,           // align content top
+                        ..default()
+                    },
+                    color: UiColor(Color::NONE),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    help_system.inventory_item_desc = parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                size: Size::new(Val::Px(510.0), Val::Auto),
+                                ..default()
+                            },
+                            text: Text::from_section(
+                                initial_inventory[0]
+                                    .0
+                                    .as_ref()
+                                    .map(|item_id| database.get(*item_id).desc.clone())
+                                    .unwrap_or("".to_string()),
+                                TextStyle {
+                                    font: font.clone(),
+                                    font_size: 14.0,
+                                    color: Color::GRAY,
+                                },
+                            ),
+                            ..default()
+                        })
+                        .id();
+                });
+        });
 
     // Board
     let mut children = vec![];
@@ -1633,6 +1777,7 @@ struct OutputBeam<'a> {
 
 struct Item {
     name: String,
+    desc: String,
     image: Handle<Image>,
     inputs: Vec<InputPort>,
     outputs: Vec<OutputPort>,
@@ -1663,6 +1808,7 @@ impl ItemDatabase {
     pub fn add(
         &mut self,
         name: &str,
+        desc: &str,
         image: Handle<Image>,
         inputs: Vec<InputPort>,
         outputs: Vec<OutputPort>,
@@ -1671,6 +1817,7 @@ impl ItemDatabase {
         let id = ItemId(self.items.len() as u32);
         self.items.push(Item {
             name: name.to_string(),
+            desc: desc.to_string(),
             image,
             inputs,
             outputs,
