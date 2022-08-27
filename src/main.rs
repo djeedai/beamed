@@ -49,7 +49,7 @@ fn main() {
         filter: "beamed=trace".to_string(),
     })
     .insert_resource(sampler) // RHHHHAAAAAAA!!!!
-    .insert_resource(ClearColor(Color::rgba(0., 0., 0., 0.)))
+    .insert_resource(ClearColor(Color::rgba(0., 0., 0., 1.)))
     .add_plugins(DefaultPlugins)
     //.add_plugin(LogDiagnosticsPlugin::default())
     .add_plugin(FrameTimeDiagnosticsPlugin::default());
