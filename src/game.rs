@@ -1415,7 +1415,7 @@ fn game_setup(
     input_map.insert(KeyCode::E, PlayerAction::TurnCursorRight);
     input_map.insert(GamepadButtonType::DPadRight, PlayerAction::TurnCursorRight);
     input_map.insert(KeyCode::Space, PlayerAction::PlaceSelectedItem);
-    //input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem); // this conflicts with Start Game menu entry
+    input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem);
     input_map.insert(GamepadButtonType::South, PlayerAction::PlaceSelectedItem);
     input_map.insert(KeyCode::Delete, PlayerAction::RemoveItemUnderCursor);
     input_map.insert(GamepadButtonType::West, PlayerAction::RemoveItemUnderCursor);

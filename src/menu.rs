@@ -70,7 +70,7 @@ impl Default for AudioManager {
 }
 
 fn menu_run(
-    mut q_menu: Query<(&mut Menu, &ActionState<MenuAction>)>,
+    mut q_menu: Query<(&mut Menu, &mut ActionState<MenuAction>)>,
     mut q_animators: Query<(&Button, &mut Animator<UiColor>), Without<Menu>>,
     q_buttons: Query<(&Button, &Node, &GlobalTransform)>,
     mut exit: EventWriter<AppExit>,
@@ -88,7 +88,7 @@ fn menu_run(
         bg_animator.rewind();
     }
 
-    let (mut menu, action_state) = q_menu.single_mut();
+    let (mut menu, mut action_state) = q_menu.single_mut();
     let prev_sel = menu.selected_index;
     if action_state.just_pressed(MenuAction::SelectNext) {
         menu.selected_index = (menu.selected_index + 1).min(1);
@@ -141,7 +141,12 @@ fn menu_run(
 
     if action_state.just_pressed(MenuAction::ClickButton) {
         match menu.selected_index {
-            0 => app_state.set(AppState::InGame).unwrap(),
+            0 => {
+                // BUGBUG -- https://bevy-cheatbook.github.io/programming/states.html
+                action_state.release_all();
+
+                app_state.set(AppState::InGame).unwrap()
+            },
             1 => exit.send(AppExit),
             _ => unreachable!(),
         }
