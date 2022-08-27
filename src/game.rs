@@ -422,7 +422,7 @@ fn rebuild_beams(
                     material,
                     transform: Transform {
                         translation: ((offset + beam.start.as_vec2()) * cell_size).extend(z),
-                        rotation: orient.into(),
+                        //rotation: orient.into(),
                         ..default()
                     },
                     ..default()
@@ -694,27 +694,27 @@ impl Beam {
     /// Rebuild the mesh for the current beam
     pub fn rebuild_mesh(&self, mesh: &mut Mesh, cell_size: Vec2) {
         // Find the size of the beam
-        let (vertices, uvs) = if self.start.x == self.end.x {
+        let (vertices, uvs, mirrored) = if self.start.x == self.end.x {
             // vertical
             assert!(self.end.y != self.start.y);
             let x = 2.;
-            let y = (self.end.y - self.start.y).abs() as f32 * cell_size.y;
+            let y = (self.end.y - self.start.y) as f32 * cell_size.y;
             let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
             let uvs = vec![[0., 0.], [0., 1.], [x, 0.], [x, 1.]];
-            (vertices, uvs)
+            (vertices, uvs, (x < 0.) ^ (y < 0.))
         } else {
             // horizontal
             assert!(self.end.y == self.start.y);
-            let x = (self.end.x - self.start.x).abs() as f32 * cell_size.x;
+            let x = (self.end.x - self.start.x) as f32 * cell_size.x;
             let y = 2.;
             let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
-            let uvs = vec![[0., 0.], [x, 0.], [0., 1.], [x, 1.]];
-            (vertices, uvs)
+            let uvs = vec![[0., 0.], [x.abs(), 0.], [0., 1.], [x.abs(), 1.]];
+            (vertices, uvs, (x < 0.) ^ (y < 0.))
         };
 
         // Build the mesh
         let normals = vec![[0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]];
-        let indices = vec![0, 1, 2, 2, 1, 3];
+        let indices = if mirrored { vec![1, 0, 2, 1, 2, 3] } else { vec![0, 1, 2, 2, 1, 3] };
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
