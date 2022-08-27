@@ -1650,7 +1650,7 @@ fn game_setup(
                                     .unwrap_or("".to_string()),
                                 TextStyle {
                                     font: font.clone(),
-                                    font_size: 18.0,
+                                    font_size: 20.0,
                                     color: Color::WHITE,
                                 },
                             ),
@@ -1685,13 +1685,98 @@ fn game_setup(
                                     .unwrap_or("".to_string()),
                                 TextStyle {
                                     font: font.clone(),
-                                    font_size: 14.0,
+                                    font_size: 17.0,
                                     color: Color::GRAY,
                                 },
                             ),
                             ..default()
                         })
                         .id();
+                });
+        });
+
+    // Instructions
+    commands
+        .spawn_bundle(NodeBundle {
+            node: Node {
+                size: Vec2::new(300., 600.),
+            },
+            style: Style {
+                position_type: PositionType::Absolute, // avoid interaction with other UI items if any
+                flex_direction: FlexDirection::ColumnReverse, // top to bottom
+                justify_content: JustifyContent::FlexStart, // align top
+                position: UiRect {
+                    left: Val::Percent(70.),
+                    right: Val::Px(30.),
+                    top: Val::Percent(30.),
+                    bottom: Val::Percent(30.),
+                    ..default()
+                },
+                ..default()
+            },
+            color: UiColor(Color::NONE),
+            ..default()
+        })
+        .insert(Name::new("instructions"))
+        .with_children(|parent| {
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        size: Size::new(Val::Auto, Val::Px(20.0)),
+                        flex_direction: FlexDirection::ColumnReverse, // top to bottom
+                        align_items: AlignItems::FlexStart,           // align content top
+                        ..default()
+                    },
+                    color: UiColor(Color::NONE),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                size: Size::new(Val::Auto, Val::Px(40.0)),
+                                ..default()
+                            },
+                            text: Text::from_section(
+                                "Instructions",
+                                TextStyle {
+                                    font: font.clone(),
+                                    font_size: 20.0,
+                                    color: Color::WHITE,
+                                },
+                            ),
+                            ..default()
+                        });
+                });
+
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        size: Size::new(Val::Auto, Val::Px(50.0)),
+                        flex_direction: FlexDirection::ColumnReverse, // top to bottom
+                        align_items: AlignItems::FlexStart,           // align content top
+                        ..default()
+                    },
+                    color: UiColor(Color::NONE),
+                    ..default()
+                })
+                .with_children(|parent| {
+                    parent
+                        .spawn_bundle(TextBundle {
+                            style: Style {
+                                size: Size::new(Val::Px(330.0), Val::Auto),
+                                ..default()
+                            },
+                            text: Text::from_section(
+                                "The objective is to light the Sink tile with the correct beam pattern. To achieve this, various tiles create and manipulate beam patterns. Combine them to form the target pattern and lead it into the Sink tile to win. You can place a tile from the inventory (bottom bar) with SPACE/ENTER onto the board, or remove it from the board with DELETE.",
+                                TextStyle {
+                                    font: font.clone(),
+                                    font_size: 17.0,
+                                    color: Color::GRAY,
+                                },
+                            ),
+                            ..default()
+                        });
                 });
         });
 
