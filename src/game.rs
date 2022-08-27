@@ -1463,6 +1463,7 @@ fn game_setup(
     let key_q_image: Handle<Image> = asset_server.load("textures/key_q.png");
     let key_e_image: Handle<Image> = asset_server.load("textures/key_e.png");
     let key_tab_image: Handle<Image> = asset_server.load("textures/key_tab.png");
+    let bindings_image: Handle<Image> = asset_server.load("textures/bindings.png");
     let initial_inventory = [
         (Some(ItemId(4)), 1),
         (Some(ItemId(1)), 1),
@@ -1527,7 +1528,11 @@ fn game_setup(
                     ..default()
                 },
                 texture: key_tab_image.clone(),
-                transform: Transform::from_translation(Vec3::new((slot_count + 1) as f32 * board.cell_size().x, 0., 0.)),
+                transform: Transform::from_translation(Vec3::new(
+                    (slot_count + 1) as f32 * board.cell_size().x,
+                    0.,
+                    0.,
+                )),
                 ..default()
             })
             .id(),
@@ -1540,6 +1545,21 @@ fn game_setup(
         .insert(inventory)
         .insert(Name::new("inventory"))
         .push_children(&children[..]);
+
+    // Bindings
+    commands.spawn_bundle(SpriteBundle {
+        sprite: Sprite {
+            custom_size: Some(Vec2::splat(128.)),
+            ..default()
+        },
+        texture: bindings_image.clone(),
+        transform: Transform::from_translation(Vec3::new(
+            -300.,
+            64.,
+            0.,
+        )),
+        ..default()
+    });
 
     // Help system
     commands
