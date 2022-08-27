@@ -225,6 +225,7 @@ fn update_cursor(
                             // If slot is emtpy, clear its image
                             if slot.is_emtpy() {
                                 *slot_image = inventory.empty_slot_image().clone();
+                                inventory.clear_slot(slot_entity);
                             }
                         } else {
                             debug!(
@@ -265,6 +266,7 @@ fn update_cursor(
                     if let Ok((mut slot, mut slot_image)) = slot_query.get_mut(slot_entity) {
                         // Add the item
                         slot.add(item_id, 1);
+                        inventory.add_item_to_slot(slot_entity, item_id, 1);
 
                         // Find the actual item
                         let item = database.get(item_id);
@@ -2021,7 +2023,14 @@ impl Slot {
     pub fn try_take(&mut self, count: usize) -> Option<ItemId> {
         if count <= self.count {
             self.count -= count;
-            self.item
+            let item = self.item.clone();
+            if self.count == 0 {
+                trace!("Slot: removed last item #{:?}", self.item);
+                self.item = None;
+            } else {
+                trace!("Slot: still {} items left", self.count);
+            }
+            item
         } else {
             None
         }
@@ -2073,6 +2082,28 @@ impl Inventory {
             }
         }
         empty_slot
+    }
+
+    pub fn clear_slot(&mut self, entity: Entity) {
+        for slot in &mut self.slots {
+            if slot.1 == entity {
+                slot.0 = None;
+                return;
+            }
+        }
+    }
+
+    pub fn add_item_to_slot(&mut self, slot_entity: Entity, item_id: ItemId, count: usize) {
+        for slot in &mut self.slots {
+            if slot.1 == slot_entity {
+                if let Some(slot_item_id) = &slot.0 {
+                    assert_eq!(*slot_item_id, item_id);
+                } else {
+                    slot.0 = Some(item_id);
+                }
+                return;
+            }
+        }
     }
 
     pub fn select(&mut self, slot_index: usize) -> bool {
