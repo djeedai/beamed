@@ -136,17 +136,28 @@ fn update_cursor(
         pos.y += 1;
     }
     if input_state.just_pressed(PlayerAction::TurnCursorLeft) {
-        cursor.turn_to(transform.rotation, -1, &mut *animator);
+        cursor.turn_to(
+            transform.translation,
+            transform.rotation,
+            -1,
+            &mut *animator,
+        );
     }
     if input_state.just_pressed(PlayerAction::TurnCursorRight) {
-        cursor.turn_to(transform.rotation, 1, &mut *animator);
+        cursor.turn_to(transform.translation, transform.rotation, 1, &mut *animator);
     }
 
     pos = pos.clamp(-half_size, half_size);
     //trace!("size={:?} half={:?} pos={:?}", size, half_size, cursor.pos);
 
     if pos != cursor.pos {
-        cursor.move_to(transform.translation, pos, board.cell_size, &mut *animator);
+        cursor.move_to(
+            transform.translation,
+            transform.rotation,
+            pos,
+            board.cell_size,
+            &mut *animator,
+        );
     }
 
     let mut inventory = inventory_query.single_mut();
@@ -461,17 +472,41 @@ impl MainCamera {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct TransformPosRotLens {
+    /// Start value of the translation.
+    pub pos_start: Vec3,
+    /// Start value of the rotation.
+    pub rot_start: Quat,
+    /// End value of the translation.
+    pub pos_end: Vec3,
+    /// End value of the rotation.
+    pub rot_end: Quat,
+}
+
+impl Lens<Transform> for TransformPosRotLens {
+    fn lerp(&mut self, target: &mut Transform, ratio: f32) {
+        let value = self.pos_start + (self.pos_end - self.pos_start) * ratio;
+        target.translation = value;
+        target.rotation = self.rot_start.slerp(self.rot_end, ratio);
+    }
+}
+
 #[derive(Component, Default, Debug, Reflect)]
 #[reflect(Component)]
 struct Cursor {
     pos: IVec2,
     orient: Orient,
+    // targets of animation (end)
+    target_pos: Vec3,
+    target_rot: Quat,
 }
 
 impl Cursor {
     pub fn move_to(
         &mut self,
-        start: Vec3,
+        pos_start: Vec3,
+        rot_start: Quat,
         end: IVec2,
         cell_size: Vec2,
         animator: &mut Animator<Transform>,
@@ -480,27 +515,35 @@ impl Cursor {
         self.pos = end;
 
         // Animate visual position
-        let lens = TransformPositionLens {
-            start,
-            end: (end.as_vec2() * cell_size).extend(start.z),
-        };
-        animator.set_tweenable(Tween::new(
-            EaseFunction::QuadraticInOut,
-            TweeningType::Once,
-            Duration::from_millis(200),
-            lens,
-        ));
+        self.target_pos = (end.as_vec2() * cell_size).extend(pos_start.z);
+        self.animate(pos_start, rot_start, animator);
     }
 
-    pub fn turn_to(&mut self, start: Quat, dir: i32, animator: &mut Animator<Transform>) {
+    pub fn turn_to(
+        &mut self,
+        pos_start: Vec3,
+        rot_start: Quat,
+        dir: i32,
+        animator: &mut Animator<Transform>,
+    ) {
+        // Set authoritative rotation
         if dir < 0 {
             self.orient.turn_left();
         } else if dir > 0 {
             self.orient.turn_right();
         }
-        let lens = TransformRotationLens {
-            start,
-            end: self.orient.into(),
+
+        // Animate visual rotation
+        self.target_rot = self.orient.into();
+        self.animate(pos_start, rot_start, animator);
+    }
+
+    fn animate(&self, pos_start: Vec3, rot_start: Quat, animator: &mut Animator<Transform>) {
+        let lens = TransformPosRotLens {
+            pos_start,
+            rot_start,
+            pos_end: self.target_pos,
+            rot_end: self.target_rot,
         };
         animator.set_tweenable(Tween::new(
             EaseFunction::QuadraticInOut,
@@ -1553,11 +1596,7 @@ fn game_setup(
             ..default()
         },
         texture: bindings_image.clone(),
-        transform: Transform::from_translation(Vec3::new(
-            -300.,
-            64.,
-            0.,
-        )),
+        transform: Transform::from_translation(Vec3::new(-300., 64., 0.)),
         ..default()
     });
 
