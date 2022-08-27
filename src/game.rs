@@ -1460,12 +1460,15 @@ fn game_setup(
     let mut board = Board::new(size);
 
     // Inventory
+    let key_q_image: Handle<Image> = asset_server.load("textures/key_q.png");
+    let key_e_image: Handle<Image> = asset_server.load("textures/key_e.png");
+    let key_tab_image: Handle<Image> = asset_server.load("textures/key_tab.png");
     let initial_inventory = [
-        (Some(ItemId(1)), 3),
-        (Some(ItemId(2)), 1),
+        (Some(ItemId(4)), 1),
+        (Some(ItemId(1)), 1),
         (None, 0),
         (Some(ItemId(3)), 2),
-        (Some(ItemId(4)), 1),
+        (Some(ItemId(2)), 3),
     ];
     let mut children = vec![];
     for (index, (maybe_item, count)) in initial_inventory.iter().enumerate() {
@@ -1514,6 +1517,19 @@ fn game_setup(
                 ..default()
             })
             .insert(InventoryCursor)
+            .id(),
+    );
+    children.push(
+        commands
+            .spawn_bundle(SpriteBundle {
+                sprite: Sprite {
+                    custom_size: Some(Vec2::splat(32.)),
+                    ..default()
+                },
+                texture: key_tab_image.clone(),
+                transform: Transform::from_translation(Vec3::new((slot_count + 1) as f32 * board.cell_size().x, 0., 0.)),
+                ..default()
+            })
             .id(),
     );
     commands
