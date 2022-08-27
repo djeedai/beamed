@@ -34,6 +34,7 @@ impl Plugin for GamePlugin {
         app.add_plugin(Material2dPlugin::<BeamMaterial>::default())
             .add_event::<ScoreEvent>()
             .add_event::<PlaceItemEvent>()
+            .add_event::<RemoveItemEvent>()
             .add_event::<RebuildBeamsEvent>()
             .add_event::<BoardCompletedEvent>()
             .register_type::<Cursor>()
@@ -71,9 +72,10 @@ enum PlayerAction {
     MoveDown,
     MoveLeft,
     MoveRight,
-    TurnItemLeft,
-    TurnItemRight,
+    TurnCursorLeft,
+    TurnCursorRight,
     PlaceSelectedItem,
+    RemoveItemUnderCursor,
     // Inventory
     SelectNextItem,
     SelectPrevItem,
@@ -84,6 +86,12 @@ struct PlaceItemEvent {
     item_id: ItemId,
     ipos: IVec2,
     orient: Orient,
+}
+
+#[derive(Debug)]
+struct RemoveItemEvent {
+    item_id: ItemId,
+    ipos: IVec2,
 }
 
 #[derive(Debug)]
@@ -108,11 +116,7 @@ fn update_cursor(
     mut slot_query: Query<(&mut Slot, &mut Handle<Image>), Without<Cell>>,
     database: Res<ItemDatabase>,
     mut place_item_event_writer: EventWriter<PlaceItemEvent>,
-    //
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut beam_materials: ResMut<Assets<BeamMaterial>>,
-    mut color_materials: ResMut<Assets<ColorMaterial>>,
-    mut commands: Commands,
+    mut remove_item_event_writer: EventWriter<RemoveItemEvent>,
 ) {
     let board = board_query.single();
     let size = board.size();
@@ -135,10 +139,10 @@ fn update_cursor(
     if input_state.just_pressed(PlayerAction::MoveUp) {
         pos.y += 1;
     }
-    if input_state.just_pressed(PlayerAction::TurnItemLeft) {
+    if input_state.just_pressed(PlayerAction::TurnCursorLeft) {
         cursor.turn_to(transform.rotation, -1, &mut *animator);
     }
-    if input_state.just_pressed(PlayerAction::TurnItemRight) {
+    if input_state.just_pressed(PlayerAction::TurnCursorRight) {
         cursor.turn_to(transform.rotation, 1, &mut *animator);
     }
 
@@ -212,6 +216,47 @@ fn update_cursor(
             warn!("Failed to find cell at pos {:?}", cursor.pos);
         }
     }
+
+    if input_state.just_pressed(PlayerAction::RemoveItemUnderCursor) {
+        trace!("Remove item...");
+
+        // Get the cell under the cursor, where the new item goes
+        let cell_entity = board.cell_at(cursor.pos);
+        if let Ok(cell) = cell_query.get(cell_entity) {
+            // Check the cell has an item
+            if let Some(item_id) = &cell.item {
+                let item_id = *item_id;
+                // Try to find a slot in the inventory to put the tile back. This is either a free slot,
+                // or a slot which already contains some instances of the same item.
+                if let Some(slot_entity) = inventory.find_slot(item_id) {
+                    // Get the actual Slot component for that entity, and its image
+                    if let Ok((mut slot, mut slot_image)) = slot_query.get_mut(slot_entity) {
+                        // Add the item
+                        slot.add(item_id, 1);
+
+                        // Find the actual item
+                        let item = database.get(item_id);
+
+                        // Always overwrite image, in case the slot was previously empty
+                        *slot_image = item.image.clone();
+
+                        // Send event to board to remove the item
+                        remove_item_event_writer.send(RemoveItemEvent {
+                            item_id,
+                            ipos: cursor.pos,
+                        });
+                    }
+                }
+            } else {
+                debug!(
+                    "Cell at pos {:?} doesn't contain any item, cannot remove.",
+                    cursor.pos
+                );
+            }
+        } else {
+            warn!("Failed to find cell at pos {:?}", cursor.pos);
+        }
+    }
 }
 
 /// Update the Board, adding/removing items and ticking all.
@@ -222,12 +267,16 @@ fn update_board(
     mut cell_query: Query<(&mut Cell, &mut Handle<Image>, &mut Transform), Without<Beam>>,
     mut beam_query: Query<(Entity, &mut Beam, &mut Transform, &Mesh2dHandle), Without<Cell>>,
     mut place_item_event_reader: EventReader<PlaceItemEvent>,
+    mut remove_item_event_reader: EventReader<RemoveItemEvent>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut rebuild_beams_event_writer: EventWriter<RebuildBeamsEvent>,
+    inventory_query: Query<&Inventory>,
 ) {
     let mut board = board_query.single_mut();
     let size = board.size();
     let half_size = (size - 1) / 2;
+
+    let inventory = inventory_query.single();
 
     // Place new items on board
     for ev in place_item_event_reader.iter() {
@@ -250,8 +299,6 @@ fn update_board(
                 cell_transform.rotation = ev.orient.into();
                 cell.item = Some(ev.item_id);
 
-                let cell_size = board.cell_size();
-
                 // Update board, for logic
                 trace!(
                     "board.add() ipos={:?} orient={:?} item_id={:?}",
@@ -260,6 +307,40 @@ fn update_board(
                     ev.item_id
                 );
                 let _ = board.add(ev.ipos, ev.orient, cell_entity, ev.item_id, item);
+                rebuild_beams_event_writer.send(RebuildBeamsEvent);
+            }
+        }
+    }
+
+    // Remove existing items from board
+    for ev in remove_item_event_reader.iter() {
+        // Get the cell under the cursor, where the item should be removed
+        let cell_entity = board.cell_at(ev.ipos);
+        trace!(
+            "RemoveItem: ipos={:?} cell_entity={:?}",
+            ev.ipos,
+            cell_entity
+        );
+        if let Ok((mut cell, mut cell_image, mut cell_transform)) = cell_query.get_mut(cell_entity)
+        {
+            // Check the cell contains an item
+            if let Some(item_id) = &cell.item {
+                // Check item ID (defensive)
+                let item_id = *item_id;
+                if item_id != ev.item_id {
+                    continue;
+                }
+
+                let item = database.get(item_id);
+
+                // Update cell, for graphics
+                *cell_image = inventory.empty_slot_image().clone();
+                cell_transform.rotation = Quat::IDENTITY;
+                cell.item = None;
+
+                // Update board, for logic
+                trace!("board.remove() ipos={:?} item_id={:?}", ev.ipos, ev.item_id);
+                board.remove(ev.ipos, cell_entity, ev.item_id, item);
                 rebuild_beams_event_writer.send(RebuildBeamsEvent);
             }
         }
@@ -1015,6 +1096,22 @@ impl Board {
         self.tiles[index].as_mut().unwrap()
     }
 
+    /// Remove an existing instance of the given item from the board.
+    pub fn remove(&mut self, ipos: IVec2, entity: Entity, item_id: ItemId, item: &Item) {
+        // Add item to board
+        let index = self.index(ipos);
+        if let Some(tile) = &self.tiles[index] {
+            // Confirm matching (defensive)
+            if tile.item_id != item_id {
+                return;
+            }
+        } else {
+            // Already nothing
+            return;
+        }
+        self.tiles[index] = None;
+    }
+
     pub fn try_get_tile(&self, entity: Entity) -> Option<&Tile> {
         for tile in &self.tiles {
             if let Some(tile) = tile {
@@ -1402,13 +1499,15 @@ fn game_setup(
     input_map.insert(KeyCode::Right, PlayerAction::MoveRight);
     input_map.insert(KeyCode::D, PlayerAction::MoveRight);
     input_map.insert(GamepadButtonType::DPadDown, PlayerAction::MoveRight);
-    input_map.insert(KeyCode::Q, PlayerAction::TurnItemLeft);
-    input_map.insert(GamepadButtonType::DPadLeft, PlayerAction::TurnItemLeft);
-    input_map.insert(KeyCode::E, PlayerAction::TurnItemRight);
-    input_map.insert(GamepadButtonType::DPadRight, PlayerAction::TurnItemRight);
+    input_map.insert(KeyCode::Q, PlayerAction::TurnCursorLeft);
+    input_map.insert(GamepadButtonType::DPadLeft, PlayerAction::TurnCursorLeft);
+    input_map.insert(KeyCode::E, PlayerAction::TurnCursorRight);
+    input_map.insert(GamepadButtonType::DPadRight, PlayerAction::TurnCursorRight);
     input_map.insert(KeyCode::Space, PlayerAction::PlaceSelectedItem);
     //input_map.insert(KeyCode::Return, PlayerAction::PlaceSelectedItem); // this conflicts with Start Game menu entry
     input_map.insert(GamepadButtonType::South, PlayerAction::PlaceSelectedItem);
+    input_map.insert(KeyCode::Delete, PlayerAction::RemoveItemUnderCursor);
+    input_map.insert(GamepadButtonType::West, PlayerAction::RemoveItemUnderCursor);
     input_map.insert(
         UserInput::chord([KeyCode::Tab, KeyCode::LShift]),
         PlayerAction::SelectPrevItem,
@@ -1468,7 +1567,8 @@ fn game_setup(
         } else {
             grid_image.clone()
         };
-        children.push(
+        children.push((
+            *maybe_item,
             commands
                 .spawn_bundle(SpriteBundle {
                     transform: Transform::from_translation(pos),
@@ -1485,7 +1585,7 @@ fn game_setup(
                 })
                 .insert(Name::new(format!("slot#{}", index)))
                 .id(),
-        );
+        ));
     }
     let mut inventory = Inventory::new(grid_image.clone());
     inventory.set_slots(children.clone());
@@ -1493,6 +1593,7 @@ fn game_setup(
     let offset = (Vec2::new(-(slot_count as f32) / 2. + 0.5, -(size.y as f32) / 2. - 3.)
         * board.cell_size())
     .extend(0.);
+    let mut children: Vec<_> = children.iter_mut().map(|(_, entity)| *entity).collect();
     children.push(
         commands
             .spawn_bundle(SpriteBundle {
@@ -1740,6 +1841,16 @@ struct Slot {
 }
 
 impl Slot {
+    pub fn add(&mut self, item_id: ItemId, count: usize) {
+        if let Some(self_item_id) = &self.item {
+            assert_eq!(*self_item_id, item_id);
+            self.count += count;
+        } else {
+            self.item = Some(item_id);
+            self.count = count;
+        }
+    }
+
     pub fn try_take(&mut self, count: usize) -> Option<ItemId> {
         if count <= self.count {
             self.count -= count;
@@ -1757,7 +1868,7 @@ impl Slot {
 #[derive(Component, Default)]
 struct Inventory {
     empty_slot_image: Handle<Image>,
-    slots: Vec<Entity>,
+    slots: Vec<(Option<ItemId>, Entity)>,
     selected_index: usize,
 }
 
@@ -1773,14 +1884,28 @@ impl Inventory {
         &self.empty_slot_image
     }
 
-    pub fn set_slots(&mut self, slots: Vec<Entity>) {
+    pub fn set_slots(&mut self, slots: Vec<(Option<ItemId>, Entity)>) {
         self.slots = slots;
         let count = self.slots.len();
         self.selected_index = self.selected_index.min(count - 1);
     }
 
-    pub fn slots(&self) -> &[Entity] {
+    pub fn slots(&self) -> &[(Option<ItemId>, Entity)] {
         &self.slots
+    }
+
+    pub fn find_slot(&self, item_id: ItemId) -> Option<Entity> {
+        let mut empty_slot = None;
+        for slot in &self.slots {
+            if let Some(slot_item_id) = &slot.0 {
+                if *slot_item_id == item_id {
+                    return Some(slot.1);
+                }
+            } else if empty_slot.is_none() {
+                empty_slot = Some(slot.1);
+            }
+        }
+        empty_slot
     }
 
     pub fn select(&mut self, slot_index: usize) -> bool {
@@ -1827,7 +1952,7 @@ impl Inventory {
 
     pub fn selected(&self) -> Option<Entity> {
         if self.selected_index < self.slots.len() {
-            Some(self.slots[self.selected_index])
+            Some(self.slots[self.selected_index].1)
         } else {
             None
         }
