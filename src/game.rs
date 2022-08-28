@@ -490,6 +490,7 @@ fn change_level(
     mut q_board: Query<&mut Board>,
     mut q_inventory: Query<(Entity, &mut Inventory, &mut Transform), Without<InventoryKeyBinding>>,
     mut q_inventory_key_binding: Query<&mut Transform, With<InventoryKeyBinding>>,
+    mut rebuild_beams_event_writer: EventWriter<RebuildBeamsEvent>,
 ) {
     let new_level = if let Some(ev) = board_completed_event_reader.iter().last() {
         match ev {
@@ -556,6 +557,9 @@ fn change_level(
 
     let mut board = q_board.single_mut();
     board.reset();
+    board.rebuild_beams(&database);
+
+    rebuild_beams_event_writer.send(RebuildBeamsEvent);
 
     let (inventory_entity, mut inventory, mut inventory_transform) = q_inventory.single_mut();
 
