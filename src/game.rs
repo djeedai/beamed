@@ -480,6 +480,7 @@ impl LevelManager {
 }
 
 fn change_level(
+    asset_server: Res<AssetServer>,
     mut commands: Commands,
     database: Res<ItemDatabase>,
     levels: Res<LevelDatabase>,
@@ -501,7 +502,46 @@ fn change_level(
                 if let Some(level) = manager.move_to_next(&*levels) {
                     level
                 } else {
-                    // TODO - THE END
+                    commands
+                        .spawn_bundle(NodeBundle {
+                            style: Style {
+                                position_type: PositionType::Absolute, // avoid interaction with other UI items if any
+                                justify_content: JustifyContent::Center, // align center vertical
+                                align_items: AlignItems::Center,       // align center horizontal
+                                position: UiRect {
+                                    left: Val::Percent(20.),
+                                    top: Val::Percent(20.),
+                                    right: Val::Percent(20.),
+                                    bottom: Val::Percent(20.),
+                                },
+                                ..default()
+                            },
+                            color: UiColor(Color::rgba(0., 0., 0., 0.7)),
+                            ..default()
+                        })
+                        .with_children(|parent| {
+                            parent.spawn_bundle(TextBundle {
+                                text: Text::from_section(
+                                    "The End",
+                                    TextStyle {
+                                        font: asset_server.load("fonts/ShareTechMono-Regular.ttf"), // FIXME - dirty...
+                                        font_size: 60.,
+                                        color: Color::WHITE,
+                                    },
+                                ),
+                                style: Style {
+                                    //position_type: PositionType::Absolute,
+                                    // position: UiRect {
+                                    //     left: Val::Percent(50.),
+                                    //     top: Val::Percent(50.),
+                                    //     ..default()
+                                    // },
+                                    ..default()
+                                },
+                                ..default()
+                            });
+                        });
+
                     return;
                 }
             }
