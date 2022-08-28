@@ -723,6 +723,7 @@ impl Cursor {
         }
 
         // Animate visual rotation
+        self.target_pos.z = pos_start.z; // in case target_pos not initialized
         self.target_rot = self.orient.into();
         self.animate(pos_start, rot_start, animator);
     }
@@ -1765,6 +1766,7 @@ fn game_setup(
                 ..default()
             },
             texture: cursor_image.clone(),
+            transform: Transform::from_translation(Vec3::Z * 0.5), // above everything else
             ..default()
         })
         .insert(Cursor::default())
