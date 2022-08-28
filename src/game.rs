@@ -1056,6 +1056,8 @@ struct Link {
     pub entity: Option<Entity>,
     /// Active bit pattern at the port.
     pub pattern: BitPattern,
+    /// Local-space orientation of link.
+    pub local_orient: Orient,
     /// Global-space orientation of link.
     pub global_orient: Orient,
 }
@@ -1111,6 +1113,7 @@ impl Tile {
                 *link = Link {
                     entity: Some(output_entity),
                     pattern,
+                    local_orient,
                     global_orient: local_orient + self.orient,
                 };
                 trace!("  => Link = {:?}", link);
@@ -1792,58 +1795,58 @@ fn init_levels(
     ];
 
     levels.levels = vec![
-        // Level {
-        //     name: "Emitter and Sink".to_string(),
-        //     inventory: level1
-        //         .iter()
-        //         .map(|(item_name, count)| {
-        //             if let Some(item_name) = &item_name {
-        //                 trace!("Trying to find item '{}' in database...", item_name);
-        //                 let item_id = database
-        //                     .find(item_name)
-        //                     .expect("Failed to find item by name.");
-        //                 (Some(item_id), *count)
-        //             } else {
-        //                 (None, 0)
-        //             }
-        //         })
-        //         .collect(),
-        //     pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
-        // },
-        // Level {
-        //     name: "Halver".to_string(),
-        //     inventory: level2
-        //         .iter()
-        //         .map(|(item_name, count)| {
-        //             if let Some(item_name) = &item_name {
-        //                 let item_id = database
-        //                     .find(item_name)
-        //                     .expect("Failed to find item by name.");
-        //                 (Some(item_id), *count)
-        //             } else {
-        //                 (None, 0)
-        //             }
-        //         })
-        //         .collect(),
-        //     pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
-        // },
-        // Level {
-        //     name: "Filter".to_string(),
-        //     inventory: level3
-        //         .iter()
-        //         .map(|(item_name, count)| {
-        //             if let Some(item_name) = &item_name {
-        //                 let item_id = database
-        //                     .find(item_name)
-        //                     .expect("Failed to find item by name.");
-        //                 (Some(item_id), *count)
-        //             } else {
-        //                 (None, 0)
-        //             }
-        //         })
-        //         .collect(),
-        //     pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
-        // },
+        Level {
+            name: "Emitter and Sink".to_string(),
+            inventory: level1
+                .iter()
+                .map(|(item_name, count)| {
+                    if let Some(item_name) = &item_name {
+                        trace!("Trying to find item '{}' in database...", item_name);
+                        let item_id = database
+                            .find(item_name)
+                            .expect("Failed to find item by name.");
+                        (Some(item_id), *count)
+                    } else {
+                        (None, 0)
+                    }
+                })
+                .collect(),
+            pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
+        },
+        Level {
+            name: "Halver".to_string(),
+            inventory: level2
+                .iter()
+                .map(|(item_name, count)| {
+                    if let Some(item_name) = &item_name {
+                        let item_id = database
+                            .find(item_name)
+                            .expect("Failed to find item by name.");
+                        (Some(item_id), *count)
+                    } else {
+                        (None, 0)
+                    }
+                })
+                .collect(),
+            pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
+        },
+        Level {
+            name: "Filter".to_string(),
+            inventory: level3
+                .iter()
+                .map(|(item_name, count)| {
+                    if let Some(item_name) = &item_name {
+                        let item_id = database
+                            .find(item_name)
+                            .expect("Failed to find item by name.");
+                        (Some(item_id), *count)
+                    } else {
+                        (None, 0)
+                    }
+                })
+                .collect(),
+            pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
+        },
         Level {
             name: "Merger".to_string(),
             inventory: level4
@@ -2932,7 +2935,19 @@ impl Gate for BitManipulator {
             BitOp::And => {
                 let mut ret = input_state.pattern;
                 trace!("<= pattern = {:?}", ret.pattern);
-                ret.pattern &= self.pattern;
+                let self_pattern = if input_state.in_orient == Orient::Left
+                    || input_state.in_orient == Orient::Bottom
+                {
+                    self.pattern
+                } else {
+                    !self.pattern
+                };
+                trace!(
+                    "  orient = {:?} | self_pattern = {:?}",
+                    input_state.in_orient,
+                    self_pattern
+                );
+                ret.pattern &= self_pattern;
                 trace!("=> pattern = {:?}", ret.pattern);
                 trace!(
                     "ret = {:?} | out_orient = {:?}",
@@ -3036,7 +3051,7 @@ impl Gate for Merger {
         // Calculate the new output state based on the input(s) one
         let mut ret = BitPattern::default();
         let mut invalid = false;
-        for input_state in &input_states {
+        for input_state in input_states {
             trace!("+ input_state = {:?}", input_state);
             trace!("  <= ret = {:?}", ret);
             for i in 0..16 {
