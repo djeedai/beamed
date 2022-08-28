@@ -483,6 +483,7 @@ fn change_level(
     mut commands: Commands,
     database: Res<ItemDatabase>,
     levels: Res<LevelDatabase>,
+    mut cell_query: Query<(&mut Cell, &mut Handle<Image>)>,
     mut board_completed_event_reader: EventReader<ChangeLevelEvent>,
     mut manager: ResMut<LevelManager>,
     mut q_board: Query<&mut Board>,
@@ -515,6 +516,14 @@ fn change_level(
 
     let mut board = q_board.single_mut();
     let (inventory_entity, mut inventory, mut inventory_transform) = q_inventory.single_mut();
+
+    // Clear board
+    for cell_entity in board.cells() {
+        if let Ok((mut cell, mut cell_image)) = cell_query.get_mut(*cell_entity) {
+            cell.item = None;
+            *cell_image = inventory.empty_slot_image().clone(); // FIXME - Should be board.empty_cell_image() ideally...
+        }
+    }
 
     // Clear old inventory slots
     let old_slots: Vec<Entity> = inventory
@@ -1476,8 +1485,20 @@ impl Default for HelpSystem {
 
 fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDatabase>) {
     // Populate item database
-    for (uid, name, desc, inputs, outputs, gate) in [
+    for (uid, image, name, desc, inputs, outputs, gate) in [
     (
+        "sink_red_full",
+        "sink",
+        "Sink",
+        "The final output for all beams.",
+        vec![InputPort {
+            port: PassThroughOrient::Any.into(),
+        }],
+        vec![],
+        Box::new(Sink::new(BitPattern::simple(BitColor::Red, 0xFFFF, 1))) as Box<dyn Gate>,
+    ),
+    (
+        "sink_red_halved",
         "sink",
         "Sink",
         "The final output for all beams.",
@@ -1488,6 +1509,7 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
         Box::new(Sink::new(BitPattern::simple(BitColor::Red, 0xF0F0, 1))) as Box<dyn Gate>,
     ),
     (
+        "halver",
         "halver",
         "Halver",
         "Halve the beam signal, producing a dashed pattern.",
@@ -1501,6 +1523,7 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
     ),
     (
         "inverter",
+        "inverter",
         "Inverter",
         "Invert the beam signal.",
         vec![InputPort {
@@ -1513,6 +1536,7 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
     ),
     (
         "filter_red",
+        "filter_red",
         "Filter",
         "Filter out all the colors of the input beams except the given one, producing a monochromatic beam on the output.",
         vec![InputPort {
@@ -1524,6 +1548,7 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
         Box::new(Filter::new(BitColor::Red)),
     ),
     (
+        "emitter_red",
         "emitter",
         "Emitter",
         "Emit a single continuous monochromatic beam.",
@@ -1535,6 +1560,7 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
     ),
     // (
     //     "multi_emit",
+    //     "multi_emit",
     //     "Multi-Emitter",
     //     "",
     //     vec![],
@@ -1543,7 +1569,7 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
     //     }],
     // ),
     ] {
-        let path = format!("textures/{}.png", uid);
+        let path = format!("textures/{}.png", image);
         let image = asset_server.load(&path);
         database.add(uid, name, desc, image, inputs, outputs, gate);
     }
@@ -1555,16 +1581,16 @@ fn init_levels(
     mut manager: ResMut<LevelManager>,
 ) {
     let level1 = &[
-        (Some("sink".to_string()), 1),
-        (Some("emitter".to_string()), 1),
+        (Some("sink_red_full".to_string()), 1),
+        (Some("emitter_red".to_string()), 1),
         (None, 0),
         (None, 0),
         (None, 0),
     ];
 
     let level2 = &[
-        (Some("sink".to_string()), 1),
-        (Some("emitter".to_string()), 1),
+        (Some("sink_red_halved".to_string()), 1),
+        (Some("emitter_red".to_string()), 1),
         (Some("halver".to_string()), 1),
         (None, 0),
         (None, 0),
