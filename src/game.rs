@@ -427,7 +427,7 @@ fn rebuild_beams(
             beam.rebuild_mesh(&mut mesh, board.cell_size());
             let mesh = Mesh2dHandle(meshes.add(mesh));
             let material = beam_materials.add(BeamMaterial {
-                color: beam.pattern.colors[0].into(), // FIXME - multi-color
+                color: bit_color_into_array(&beam.pattern.colors),
                 pattern: beam.pattern.pattern as u32,
             });
             let z = 0.5; // above everything else
@@ -651,7 +651,7 @@ fn change_level(
             new_level.pattern.pattern
         );
         *handle = beam_materials.add(BeamMaterial {
-            color: new_level.pattern.colors[0].into(), // TODO - multi-color
+            color: bit_color_into_array(&new_level.pattern.colors),
             pattern: new_level.pattern.pattern as u32,
         });
     }
@@ -1727,6 +1727,28 @@ fn init_levels(
                 })
                 .collect(),
             pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
+            // pattern: BitPattern {
+            //     pattern: 0xF0FF,
+            //     colors: [
+            //         BitColor::White,
+            //         BitColor::Red,
+            //         BitColor::Green,
+            //         BitColor::Blue,
+            //         BitColor::White,
+            //         BitColor::Red,
+            //         BitColor::Green,
+            //         BitColor::Blue,
+            //         BitColor::White,
+            //         BitColor::Red,
+            //         BitColor::Green,
+            //         BitColor::Blue,
+            //         BitColor::White,
+            //         BitColor::Red,
+            //         BitColor::Green,
+            //         BitColor::Blue,
+            //     ],
+            //     thicknesses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            // },
         },
         Level {
             name: "Halver".to_string(),
@@ -1913,7 +1935,7 @@ fn game_setup(
         })
         .insert(Name::new("BindingsHelp"));
 
-    // Current level target
+    // Current level target beam
     {
         let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
         rebuild_beam_mesh(
@@ -1924,14 +1946,14 @@ fn game_setup(
         );
         let mesh = Mesh2dHandle(meshes.add(mesh));
         let material = beam_materials.add(BeamMaterial {
-            color: BitColor::Red.into(),
+            color: [BitColor::Red.into(); 16],
             pattern: 0xF0F0 as u32,
         });
         commands
             .spawn_bundle(MaterialMesh2dBundle {
                 mesh,
                 material,
-                transform: Transform::from_translation(Vec3::new(250., -96., 0.)),
+                transform: Transform::from_translation(Vec3::new(260., -96., 0.)),
                 ..default()
             })
             .insert(Name::new("TargetBeam"))
@@ -2557,6 +2579,27 @@ impl From<BitColor> for Color {
             BitColor::Violet => Color::VIOLET,
         }
     }
+}
+
+fn bit_color_into_array(bc: &[BitColor; 16]) -> [Color; 16] {
+    [
+        bc[0].into(),
+        bc[1].into(),
+        bc[2].into(),
+        bc[3].into(),
+        bc[4].into(),
+        bc[5].into(),
+        bc[6].into(),
+        bc[7].into(),
+        bc[8].into(),
+        bc[9].into(),
+        bc[10].into(),
+        bc[11].into(),
+        bc[12].into(),
+        bc[13].into(),
+        bc[14].into(),
+        bc[15].into(),
+    ]
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]

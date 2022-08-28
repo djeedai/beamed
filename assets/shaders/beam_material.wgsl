@@ -2,7 +2,7 @@
 #import bevy_sprite::mesh2d_view_bindings
 
 struct BeamMaterial {
-    color: vec4<f32>,
+    colors: array<vec4<f32>, 16>,
     pattern: u32,
 };
 
@@ -28,7 +28,7 @@ fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
     let i = clamp(u32(u * 16.0), 0u, 15u);
     let bit = 1u << i;
     if ((bit & material.pattern) != 0u) {
-        return material.color;
+        return material.colors[i];
     }
     discard;
 }

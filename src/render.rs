@@ -9,7 +9,7 @@ use bevy::{
 #[uuid = "050ce6ca-080a-4d8c-b6b5-b5bab7560d8f"]
 pub struct BeamMaterial {
     #[uniform(0)]
-    pub color: Color,
+    pub color: [Color; 16],
     #[uniform(0)]
     pub pattern: u32,
 }
