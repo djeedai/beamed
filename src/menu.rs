@@ -146,7 +146,7 @@ fn menu_run(
                 action_state.release_all();
 
                 app_state.set(AppState::InGame).unwrap()
-            },
+            }
             1 => exit.send(AppExit),
             _ => unreachable!(),
         }
@@ -300,7 +300,11 @@ fn menu_setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                     Duration::from_secs_f32(DURATION_SEC),
                     UiColorLens {
                         start: Color::rgb_u8(48, 48, 48),
-                        end: if index == 0 { MENU_COLORS[1] } else { Color::rgb_u8(48, 48, 48) },
+                        end: if index == 0 {
+                            MENU_COLORS[1]
+                        } else {
+                            Color::rgb_u8(48, 48, 48)
+                        },
                     },
                 );
                 let seq = delay.then(tween_scale.with_completed_event(0));

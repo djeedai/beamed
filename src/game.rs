@@ -20,7 +20,11 @@ use bevy_kira_audio::{
 };
 use bevy_tweening::{lens::*, *};
 use leafwing_input_manager::prelude::*;
-use std::{f32::consts::PI, time::Duration, usize};
+use std::{
+    f32::consts::{E, PI},
+    time::Duration,
+    usize,
+};
 
 pub struct GamePlugin;
 
@@ -1383,6 +1387,10 @@ impl Board {
                 tile.entity
             );
 
+            // Clear any beam starting at current tile; we're re-processing it from a previous
+            // iteration, so the existing beams are wrong.
+            beams.retain(|beam: &Beam| beam.start != tile.ipos);
+
             // Tick the item at the tile to propagate beam signals
             let item = database.get(tile.item_id);
             let inputs: Vec<InputBeam> = tile
@@ -1603,6 +1611,38 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
         Box::new(Sink::new(BitPattern::simple(BitColor::Red, 0xF0F0, 1))) as Box<dyn Gate>,
     ),
     (
+        "sink_red_green",
+        "sink",
+        "Sink",
+        "The final output for all beams.",
+        vec![InputPort {
+            port: PassThroughOrient::Any.into(),
+        }],
+        vec![],
+        Box::new(Sink::new(BitPattern {
+            pattern: 0xFFFF,
+            colors: [
+                BitColor::Red,
+                BitColor::Red,
+                BitColor::Red,
+                BitColor::Red,
+                BitColor::Green,
+                BitColor::Green,
+                BitColor::Green,
+                BitColor::Green,
+                BitColor::Red,
+                BitColor::Red,
+                BitColor::Red,
+                BitColor::Red,
+                BitColor::Green,
+                BitColor::Green,
+                BitColor::Green,
+                BitColor::Green,
+            ],
+            thicknesses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        })) as Box<dyn Gate>,
+    ),
+    (
         "halver",
         "halver",
         "Halver",
@@ -1614,6 +1654,29 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
             port: PassThroughOrient::Horizontal.into(),
         }],
         Box::new(BitManipulator::new(0xF0F0, BitOp::And)),
+    ),
+    (
+        "merger",
+        "merger",
+        "Merger",
+        "Merge input beams into a single output. The input patterns must be disjoint.",
+        vec![InputPort {
+            port: Port::Single(Orient::Bottom),
+        },
+
+
+
+
+        InputPort {
+            port: Port::Single(Orient::Left),
+        },
+        InputPort {
+            port: Port::Single(Orient::Right),
+        }],
+        vec![OutputPort {
+            port: Port::Single(Orient::Top),
+        }],
+        Box::new(Merger::default()),
     ),
     (
         "inverter",
@@ -1663,6 +1726,17 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
         }],
         Box::new(Emitter::new(BitColor::Red, 1)),
     ),
+    (
+        "emitter_green",
+        "emitter",
+        "Green Emitter",
+        "Emit a single continuous green beam.",
+        vec![],
+        vec![OutputPort {
+            port: Orient::Top.into(),
+        }],
+        Box::new(Emitter::new(BitColor::Green, 1)),
+    ),
     // (
     //     "multi_emit",
     //     "multi_emit",
@@ -1709,80 +1783,104 @@ fn init_levels(
         (None, 0),
     ];
 
+    let level4 = &[
+        (Some("sink_red_green".to_string()), 1),
+        (Some("emitter_red".to_string()), 1),
+        (Some("emitter_green".to_string()), 1),
+        (Some("halver".to_string()), 2),
+        (Some("merger".to_string()), 1),
+    ];
+
     levels.levels = vec![
+        // Level {
+        //     name: "Emitter and Sink".to_string(),
+        //     inventory: level1
+        //         .iter()
+        //         .map(|(item_name, count)| {
+        //             if let Some(item_name) = &item_name {
+        //                 trace!("Trying to find item '{}' in database...", item_name);
+        //                 let item_id = database
+        //                     .find(item_name)
+        //                     .expect("Failed to find item by name.");
+        //                 (Some(item_id), *count)
+        //             } else {
+        //                 (None, 0)
+        //             }
+        //         })
+        //         .collect(),
+        //     pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
+        // },
+        // Level {
+        //     name: "Halver".to_string(),
+        //     inventory: level2
+        //         .iter()
+        //         .map(|(item_name, count)| {
+        //             if let Some(item_name) = &item_name {
+        //                 let item_id = database
+        //                     .find(item_name)
+        //                     .expect("Failed to find item by name.");
+        //                 (Some(item_id), *count)
+        //             } else {
+        //                 (None, 0)
+        //             }
+        //         })
+        //         .collect(),
+        //     pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
+        // },
+        // Level {
+        //     name: "Filter".to_string(),
+        //     inventory: level3
+        //         .iter()
+        //         .map(|(item_name, count)| {
+        //             if let Some(item_name) = &item_name {
+        //                 let item_id = database
+        //                     .find(item_name)
+        //                     .expect("Failed to find item by name.");
+        //                 (Some(item_id), *count)
+        //             } else {
+        //                 (None, 0)
+        //             }
+        //         })
+        //         .collect(),
+        //     pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
+        // },
         Level {
-            name: "Emitter and Sink".to_string(),
-            inventory: level1
+            name: "Merger".to_string(),
+            inventory: level4
                 .iter()
                 .map(|(item_name, count)| {
                     if let Some(item_name) = &item_name {
-                        trace!("Trying to find item '{}' in database...", item_name);
                         let item_id = database
                             .find(item_name)
-                            .expect("Failed to find item by name.");
+                            .expect(&format!("Failed to find item by name: {}", item_name));
                         (Some(item_id), *count)
                     } else {
                         (None, 0)
                     }
                 })
                 .collect(),
-            pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
-            // pattern: BitPattern {
-            //     pattern: 0xF0FF,
-            //     colors: [
-            //         BitColor::White,
-            //         BitColor::Red,
-            //         BitColor::Green,
-            //         BitColor::Blue,
-            //         BitColor::White,
-            //         BitColor::Red,
-            //         BitColor::Green,
-            //         BitColor::Blue,
-            //         BitColor::White,
-            //         BitColor::Red,
-            //         BitColor::Green,
-            //         BitColor::Blue,
-            //         BitColor::White,
-            //         BitColor::Red,
-            //         BitColor::Green,
-            //         BitColor::Blue,
-            //     ],
-            //     thicknesses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            // },
-        },
-        Level {
-            name: "Halver".to_string(),
-            inventory: level2
-                .iter()
-                .map(|(item_name, count)| {
-                    if let Some(item_name) = &item_name {
-                        let item_id = database
-                            .find(item_name)
-                            .expect("Failed to find item by name.");
-                        (Some(item_id), *count)
-                    } else {
-                        (None, 0)
-                    }
-                })
-                .collect(),
-            pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
-        },
-        Level {
-            name: "Filter".to_string(),
-            inventory: level3
-                .iter()
-                .map(|(item_name, count)| {
-                    if let Some(item_name) = &item_name {
-                        let item_id = database
-                            .find(item_name)
-                            .expect("Failed to find item by name.");
-                        (Some(item_id), *count)
-                    } else {
-                        (None, 0)
-                    }
-                })
-                .collect(),
-            pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
+            pattern: BitPattern {
+                pattern: 0xFFFF,
+                colors: [
+                    BitColor::Red,
+                    BitColor::Red,
+                    BitColor::Red,
+                    BitColor::Red,
+                    BitColor::Green,
+                    BitColor::Green,
+                    BitColor::Green,
+                    BitColor::Green,
+                    BitColor::Red,
+                    BitColor::Red,
+                    BitColor::Red,
+                    BitColor::Red,
+                    BitColor::Green,
+                    BitColor::Green,
+                    BitColor::Green,
+                    BitColor::Green,
+                ],
+                thicknesses: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            },
         },
     ];
 
@@ -2853,6 +2951,118 @@ impl Gate for BitManipulator {
                 unimplemented!()
             }
         }
+
+        // Check if state changed
+        if let Some(prev_output_state) = &output.state {
+            if let Some(new_output_state) = &new_output_state {
+                // old = Some, new = Some
+                trace!(
+                    "output: old = {:?} | new = {:?} | changed = {}",
+                    prev_output_state,
+                    new_output_state,
+                    prev_output_state == new_output_state
+                );
+                if prev_output_state == new_output_state {
+                    trace!("Idle: old == new == {:?}", prev_output_state);
+                    return TickResult::Idle;
+                }
+                output.state = Some(*new_output_state);
+                trace!("OutputChanged: output => {:?}", output.state);
+                return TickResult::OutputChanged;
+            } else {
+                // old = Some, new = None
+                output.state = None;
+                trace!("OutputChanged: output => None");
+                return TickResult::OutputChanged;
+            }
+        } else if new_output_state.is_some() {
+            // old = None, new = Some
+            output.state = new_output_state;
+            trace!("OutputChanged: output => {:?}", output.state);
+            return TickResult::OutputChanged;
+        } else {
+            // old = None, new = None
+            trace!("Idle: old == new == None");
+            return TickResult::Idle;
+        }
+    }
+}
+
+/// A beam merger.
+#[derive(Component, Default, Debug)]
+struct Merger;
+
+impl Gate for Merger {
+    fn tick(&self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) -> TickResult {
+        trace!(
+            "Merger::tick(inputs = {:?}, outputs = {:?})",
+            inputs,
+            outputs
+        );
+
+        // Only 1 output by design
+        let output = &mut outputs[0];
+        let output_orient = if let Port::Single(orient) = &output.port.port {
+            *orient
+        } else {
+            panic!("Got multi-output on Merger!");
+        };
+
+        // Get active inputs
+        let input_states: Vec<_> = inputs
+            .iter()
+            .filter_map(|input| {
+                // Check if the input port is active and get its state
+                if let Some(input_state) = &input.state {
+                    Some(input_state)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if input_states.is_empty() {
+            if output.state.is_some() {
+                // No input, but there was an output; clear it
+                trace!("Inactive input(s), clearing output too.");
+                output.state = None;
+                return TickResult::OutputChanged;
+            } else {
+                // Neither input not output
+                trace!("Inactive input(s) and output, nothing to do.");
+                return TickResult::Idle;
+            }
+        }
+
+        // Calculate the new output state based on the input(s) one
+        let mut ret = BitPattern::default();
+        let mut invalid = false;
+        for input_state in &input_states {
+            trace!("+ input_state = {:?}", input_state);
+            trace!("  <= ret = {:?}", ret);
+            for i in 0..16 {
+                let bit = 1u16 << i;
+                if (input_state.pattern.pattern & bit) != 0 {
+                    if (ret.pattern & bit) == 0 {
+                        ret.pattern |= bit;
+                        ret.colors[i] = input_state.pattern.colors[i];
+                        ret.thicknesses[i] = input_state.pattern.thicknesses[i];
+                    } else {
+                        trace!("  INVALID at bit {}", bit);
+                        invalid = true;
+                    }
+                }
+            }
+            trace!("  => ret = {:?}", ret);
+        }
+        let new_output_state = if invalid {
+            None
+        } else {
+            Some(OutputPortState {
+                pattern: ret,
+                out_orient: output_orient,
+            })
+        };
+        trace!("new_output_state = {:?}", new_output_state);
 
         // Check if state changed
         if let Some(prev_output_state) = &output.state {
