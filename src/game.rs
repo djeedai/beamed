@@ -33,12 +33,14 @@ impl Plugin for GamePlugin {
             .add_event::<PlaceItemEvent>()
             .add_event::<RemoveItemEvent>()
             .add_event::<RebuildBeamsEvent>()
-            .add_event::<BoardCompletedEvent>()
+            .add_event::<ChangeLevelEvent>()
             .register_type::<Cursor>()
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
             .init_resource::<ItemDatabase>()
             .init_resource::<HelpSystem>()
+            .init_resource::<LevelDatabase>()
+            .init_resource::<LevelManager>()
             .add_plugin(InputManagerPlugin::<PlayerAction>::default())
             .add_system_set_to_stage(
                 CoreStage::First,
@@ -46,15 +48,21 @@ impl Plugin for GamePlugin {
             )
             .add_system_set_to_stage(
                 CoreStage::Update,
-                SystemSet::on_enter(AppState::InGame).with_system(game_setup),
+                SystemSet::on_enter(AppState::InGame)
+                    .with_system(init_database)
+                    .with_system(init_levels.after(init_database))
+                    .with_system(game_setup.after(init_levels)),
+            )
+            .add_system_set_to_stage(
+                CoreStage::PreUpdate,
+                SystemSet::on_update(AppState::InGame).with_system(change_level),
             )
             .add_system_set_to_stage(
                 CoreStage::Update,
                 SystemSet::on_update(AppState::InGame)
                     .with_system(update_cursor)
                     .with_system(update_board.after(update_cursor))
-                    .with_system(rebuild_beams.after(update_board))
-                    .with_system(change_level.after(rebuild_beams)),
+                    .with_system(rebuild_beams.after(update_board)),
             );
     }
 }
@@ -92,7 +100,11 @@ struct RemoveItemEvent {
 struct RebuildBeamsEvent;
 
 #[derive(Debug)]
-struct BoardCompletedEvent;
+enum ChangeLevelEvent {
+    First,
+    Next,
+    //Named(String),
+}
 
 fn update_cursor(
     board_query: Query<&Board>,
@@ -391,7 +403,7 @@ fn rebuild_beams(
     mut rebuild_beams_event_reader: EventReader<RebuildBeamsEvent>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut beam_materials: ResMut<Assets<BeamMaterial>>,
-    mut board_completed_event_writer: EventWriter<BoardCompletedEvent>,
+    mut board_completed_event_writer: EventWriter<ChangeLevelEvent>,
 ) {
     // Drain all event and early out if none
     if rebuild_beams_event_reader.iter().last().is_none() {
@@ -435,16 +447,136 @@ fn rebuild_beams(
     }
 
     if board.completed() {
-        board_completed_event_writer.send(BoardCompletedEvent);
+        board_completed_event_writer.send(ChangeLevelEvent::Next);
     }
 }
 
-fn change_level(mut board_completed_event_reader: EventReader<BoardCompletedEvent>) {
-    if board_completed_event_reader.iter().last().is_none() {
+#[derive(Debug, Default)]
+struct Level {
+    name: String,
+    inventory: Vec<(Option<ItemId>, usize)>,
+    pattern: BitPattern,
+}
+
+#[derive(Debug, Default)]
+struct LevelDatabase {
+    levels: Vec<Level>,
+}
+
+#[derive(Debug, Default)]
+struct LevelManager {
+    current_index: usize,
+}
+
+impl LevelManager {
+    pub fn move_to_next<'a>(&mut self, levels: &'a LevelDatabase) -> Option<&'a Level> {
+        if self.current_index + 1 < levels.levels.len() {
+            self.current_index += 1;
+            Some(&levels.levels[self.current_index])
+        } else {
+            None
+        }
+    }
+}
+
+fn change_level(
+    mut commands: Commands,
+    database: Res<ItemDatabase>,
+    levels: Res<LevelDatabase>,
+    mut board_completed_event_reader: EventReader<ChangeLevelEvent>,
+    mut manager: ResMut<LevelManager>,
+    mut q_board: Query<&mut Board>,
+    mut q_inventory: Query<(Entity, &mut Inventory, &mut Transform), Without<InventoryKeyBinding>>,
+    mut q_inventory_key_binding: Query<&mut Transform, With<InventoryKeyBinding>>,
+) {
+    let new_level = if let Some(ev) = board_completed_event_reader.iter().last() {
+        match ev {
+            ChangeLevelEvent::First => {
+                info!("Loading first level...");
+                &levels.levels[0]
+            }
+            ChangeLevelEvent::Next => {
+                info!("Changing level to Next = ..."); // TODO
+                if let Some(level) = manager.move_to_next(&*levels) {
+                    level
+                } else {
+                    // TODO - THE END
+                    return;
+                }
+            }
+            _ => unimplemented!(),
+        }
+    } else {
+        // Nothing to do
         return;
+    };
+
+    info!("New Level: {}", new_level.name);
+
+    let mut board = q_board.single_mut();
+    let (inventory_entity, mut inventory, mut inventory_transform) = q_inventory.single_mut();
+
+    // Clear old inventory slots
+    let old_slots: Vec<Entity> = inventory
+        .slots()
+        .iter()
+        .map(|(_, entity)| *entity)
+        .collect();
+    for entity in old_slots {
+        commands.entity(entity).despawn();
     }
 
-    info!("Changing level to: ..."); // TODO
+    // Create new inventory slots
+    let mut children = vec![];
+    for (index, (maybe_item, count)) in new_level.inventory.iter().enumerate() {
+        let count = if maybe_item.is_none() { 0 } else { *count };
+        let pos = Vec3::new(index as f32 * board.cell_size().x, 0., 0.);
+        let texture = if let Some(item_id) = maybe_item {
+            let image = database.get(*item_id).image.clone();
+            trace!("item #{:?} has image {:?}", item_id, image);
+            image
+        } else {
+            inventory.empty_slot_image().clone()
+        };
+        children.push((
+            *maybe_item,
+            commands
+                .spawn_bundle(SpriteBundle {
+                    transform: Transform::from_translation(pos),
+                    sprite: Sprite {
+                        custom_size: Some(Vec2::splat(32.)),
+                        ..default()
+                    },
+                    texture,
+                    ..default()
+                })
+                .insert(Slot {
+                    item: maybe_item.clone(),
+                    count,
+                })
+                .insert(Name::new(format!("slot#{}", index)))
+                .id(),
+        ));
+    }
+    inventory.set_slots(children.clone());
+
+    // Move inventory
+    let slot_count = inventory.slots().len();
+    inventory_transform.translation = (Vec2::new(
+        -(slot_count as f32) / 2. + 0.5,
+        -(board.size().y as f32) / 2. - 3.,
+    ) * board.cell_size())
+    .extend(0.);
+
+    // Move TAB key binding indicator
+    let mut transform = q_inventory_key_binding.single_mut();
+    transform.translation.x = (slot_count as f32 + 0.5) * board.cell_size().x;
+
+    // Spawn new slots
+    let mut children: Vec<_> = children.iter_mut().map(|(_, entity)| *entity).collect();
+    commands
+        .entity(inventory_entity)
+        .push_children(&children[..]);
 }
 
 #[derive(Component)]
@@ -716,7 +848,11 @@ impl Beam {
 
         // Build the mesh
         let normals = vec![[0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]];
-        let indices = if mirrored { vec![1, 0, 2, 1, 2, 3] } else { vec![0, 1, 2, 2, 1, 3] };
+        let indices = if mirrored {
+            vec![1, 0, 2, 1, 2, 3]
+        } else {
+            vec![0, 1, 2, 2, 1, 3]
+        };
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
@@ -1338,6 +1474,143 @@ impl Default for HelpSystem {
     }
 }
 
+fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDatabase>) {
+    // Populate item database
+    for (uid, name, desc, inputs, outputs, gate) in [
+    (
+        "sink",
+        "Sink",
+        "The final output for all beams.",
+        vec![InputPort {
+            port: PassThroughOrient::Any.into(),
+        }],
+        vec![],
+        Box::new(Sink::new(BitPattern::simple(BitColor::Red, 0xF0F0, 1))) as Box<dyn Gate>,
+    ),
+    (
+        "halver",
+        "Halver",
+        "Halve the beam signal, producing a dashed pattern.",
+        vec![InputPort {
+            port: PassThroughOrient::Horizontal.into(),
+        }],
+        vec![OutputPort {
+            port: PassThroughOrient::Horizontal.into(),
+        }],
+        Box::new(BitManipulator::new(0xF0F0, BitOp::And)),
+    ),
+    (
+        "inverter",
+        "Inverter",
+        "Invert the beam signal.",
+        vec![InputPort {
+            port: PassThroughOrient::Horizontal.into(),
+        }],
+        vec![OutputPort {
+            port: PassThroughOrient::Horizontal.into(),
+        }],
+        Box::new(BitManipulator::new(0xFFFF, BitOp::Not)),
+    ),
+    (
+        "filter_red",
+        "Filter",
+        "Filter out all the colors of the input beams except the given one, producing a monochromatic beam on the output.",
+        vec![InputPort {
+            port: PassThroughOrient::Any.into(),
+        }],
+        vec![OutputPort {
+            port: PassThroughOrient::Any.into(),
+        }],
+        Box::new(Filter::new(BitColor::Red)),
+    ),
+    (
+        "emitter",
+        "Emitter",
+        "Emit a single continuous monochromatic beam.",
+        vec![],
+        vec![OutputPort {
+            port: Orient::Top.into(),
+        }],
+        Box::new(Emitter::new(BitColor::Red, 1)),
+    ),
+    // (
+    //     "multi_emit",
+    //     "Multi-Emitter",
+    //     "",
+    //     vec![],
+    //     vec![OutputPort {
+    //         port: Port::Any,
+    //     }],
+    // ),
+    ] {
+        let path = format!("textures/{}.png", uid);
+        let image = asset_server.load(&path);
+        database.add(uid, name, desc, image, inputs, outputs, gate);
+    }
+}
+
+fn init_levels(
+    database: Res<ItemDatabase>,
+    mut levels: ResMut<LevelDatabase>,
+    mut manager: ResMut<LevelManager>,
+) {
+    let level1 = &[
+        (Some("sink".to_string()), 1),
+        (Some("emitter".to_string()), 1),
+        (None, 0),
+        (None, 0),
+        (None, 0),
+    ];
+
+    let level2 = &[
+        (Some("sink".to_string()), 1),
+        (Some("emitter".to_string()), 1),
+        (Some("halver".to_string()), 1),
+        (None, 0),
+        (None, 0),
+    ];
+
+    levels.levels = vec![
+        Level {
+            name: "Emitter and Sink".to_string(),
+            inventory: level1
+                .iter()
+                .map(|(item_name, count)| {
+                    if let Some(item_name) = &item_name {
+                        trace!("Trying to find item '{}' in database...", item_name);
+                        let item_id = database
+                            .find(item_name)
+                            .expect("Failed to find item by name.");
+                        (Some(item_id), *count)
+                    } else {
+                        (None, 0)
+                    }
+                })
+                .collect(),
+            pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
+        },
+        Level {
+            name: "Halver".to_string(),
+            inventory: level2
+                .iter()
+                .map(|(item_name, count)| {
+                    if let Some(item_name) = &item_name {
+                        let item_id = database
+                            .find(item_name)
+                            .expect("Failed to find item by name.");
+                        (Some(item_id), *count)
+                    } else {
+                        (None, 0)
+                    }
+                })
+                .collect(),
+            pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
+        },
+    ];
+
+    manager.current_index = 0;
+}
+
 fn game_setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -1349,8 +1622,10 @@ fn game_setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut fixup_images: ResMut<FixupImages>,
-    mut database: ResMut<ItemDatabase>,
+    database: Res<ItemDatabase>,
+    levels: Res<LevelDatabase>,
     mut place_item_event_writer: EventWriter<PlaceItemEvent>,
+    mut board_completed_event_writer: EventWriter<ChangeLevelEvent>,
 ) {
     println!("game_setup");
 
@@ -1359,79 +1634,6 @@ fn game_setup(
     //audio_res.sound_move_cursor = asset_server.load("sounds/move_cursor.ogg");
 
     let font = asset_server.load("fonts/ShareTechMono-Regular.ttf");
-
-    // Populate item database
-    for (id, name, desc, inputs, outputs, gate) in [
-        (
-            "sink",
-            "Sink",
-            "The final output for all beams.",
-            vec![InputPort {
-                port: PassThroughOrient::Any.into(),
-            }],
-            vec![],
-            Box::new(Sink::new(BitPattern::simple(BitColor::Red, 0xF0F0, 1))) as Box<dyn Gate>,
-        ),
-        (
-            "halver",
-            "Halver",
-            "Halve the beam signal, producing a dashed pattern.",
-            vec![InputPort {
-                port: PassThroughOrient::Horizontal.into(),
-            }],
-            vec![OutputPort {
-                port: PassThroughOrient::Horizontal.into(),
-            }],
-            Box::new(BitManipulator::new(0xF0F0, BitOp::And)),
-        ),
-        (
-            "inverter",
-            "Inverter",
-            "Invert the beam signal.",
-            vec![InputPort {
-                port: PassThroughOrient::Horizontal.into(),
-            }],
-            vec![OutputPort {
-                port: PassThroughOrient::Horizontal.into(),
-            }],
-            Box::new(BitManipulator::new(0xFFFF, BitOp::Not)),
-        ),
-        (
-            "filter_red",
-            "Filter",
-            "Filter out all the colors of the input beams except the given one, producing a monochromatic beam on the output.",
-            vec![InputPort {
-                port: PassThroughOrient::Any.into(),
-            }],
-            vec![OutputPort {
-                port: PassThroughOrient::Any.into(),
-            }],
-            Box::new(Filter::new(BitColor::Red)),
-        ),
-        (
-            "emit",
-            "Emitter",
-            "Emit a single continuous monochromatic beam.",
-            vec![],
-            vec![OutputPort {
-                port: Orient::Top.into(),
-            }],
-            Box::new(Emitter::new(BitColor::Red, 1)),
-        ),
-        // (
-        //     "multi_emit",
-        //     "Multi-Emitter",
-        //     "",
-        //     vec![],
-        //     vec![OutputPort {
-        //         port: Port::Any,
-        //     }],
-        // ),
-    ] {
-        let path = format!("textures/{}.png", id);
-        let image = asset_server.load(&path);
-        database.add(name, desc, image, inputs, outputs, gate);
-    }
 
     // Main camera
     commands
@@ -1509,98 +1711,50 @@ fn game_setup(
     let key_e_image: Handle<Image> = asset_server.load("textures/key_e.png");
     let key_tab_image: Handle<Image> = asset_server.load("textures/key_tab.png");
     let bindings_image: Handle<Image> = asset_server.load("textures/bindings.png");
-    let initial_inventory = [
-        (Some(ItemId(4)), 1),
-        (Some(ItemId(1)), 1),
-        (None, 0),
-        (Some(ItemId(3)), 2),
-        (Some(ItemId(2)), 3),
-    ];
-    let mut children = vec![];
-    for (index, (maybe_item, count)) in initial_inventory.iter().enumerate() {
-        let count = if maybe_item.is_none() { 0 } else { *count };
-        let pos = Vec3::new(index as f32 * board.cell_size().x, 0., 0.);
-        let texture = if let Some(item_id) = maybe_item {
-            database.get(*item_id).image.clone()
-        } else {
-            grid_image.clone()
-        };
-        children.push((
-            *maybe_item,
-            commands
+    let mut inventory = Inventory::new(grid_image.clone());
+    commands
+        .spawn_bundle(SpatialBundle { ..default() }) // needed for children to be visible
+        .insert(inventory)
+        .insert(Name::new("inventory"))
+        .with_children(|parent| {
+            parent
                 .spawn_bundle(SpriteBundle {
-                    transform: Transform::from_translation(pos),
                     sprite: Sprite {
                         custom_size: Some(Vec2::splat(32.)),
                         ..default()
                     },
-                    texture,
+                    texture: cursor_image.clone(),
+                    transform: Transform::from_translation(Vec3::new(0., 0., 0.5)), // ensure above
                     ..default()
                 })
-                .insert(Slot {
-                    item: maybe_item.clone(),
-                    count,
+                .insert(InventoryCursor)
+                .insert(Name::new("InventoryCursor"));
+
+            parent
+                .spawn_bundle(SpriteBundle {
+                    sprite: Sprite {
+                        custom_size: Some(Vec2::splat(32.)),
+                        ..default()
+                    },
+                    texture: key_tab_image.clone(),
+                    ..default()
                 })
-                .insert(Name::new(format!("slot#{}", index)))
-                .id(),
-        ));
-    }
-    let mut inventory = Inventory::new(grid_image.clone());
-    inventory.set_slots(children.clone());
-    let slot_count = inventory.slots().len();
-    let offset = (Vec2::new(-(slot_count as f32) / 2. + 0.5, -(size.y as f32) / 2. - 3.)
-        * board.cell_size())
-    .extend(0.);
-    let mut children: Vec<_> = children.iter_mut().map(|(_, entity)| *entity).collect();
-    children.push(
-        commands
-            .spawn_bundle(SpriteBundle {
-                sprite: Sprite {
-                    custom_size: Some(Vec2::splat(32.)),
-                    ..default()
-                },
-                texture: cursor_image.clone(),
-                ..default()
-            })
-            .insert(InventoryCursor)
-            .id(),
-    );
-    children.push(
-        commands
-            .spawn_bundle(SpriteBundle {
-                sprite: Sprite {
-                    custom_size: Some(Vec2::splat(32.)),
-                    ..default()
-                },
-                texture: key_tab_image.clone(),
-                transform: Transform::from_translation(Vec3::new(
-                    (slot_count + 1) as f32 * board.cell_size().x,
-                    0.,
-                    0.,
-                )),
-                ..default()
-            })
-            .id(),
-    );
-    commands
-        .spawn_bundle(SpatialBundle {
-            transform: Transform::from_translation(offset),
-            ..default()
-        }) // needed for children to be visible
-        .insert(inventory)
-        .insert(Name::new("inventory"))
-        .push_children(&children[..]);
+                .insert(InventoryKeyBinding)
+                .insert(Name::new("InventoryKeyBinding"));
+        });
 
     // Bindings
-    commands.spawn_bundle(SpriteBundle {
-        sprite: Sprite {
-            custom_size: Some(Vec2::splat(128.)),
+    commands
+        .spawn_bundle(SpriteBundle {
+            sprite: Sprite {
+                custom_size: Some(Vec2::splat(128.)),
+                ..default()
+            },
+            texture: bindings_image.clone(),
+            transform: Transform::from_translation(Vec3::new(-300., 64., 0.)),
             ..default()
-        },
-        texture: bindings_image.clone(),
-        transform: Transform::from_translation(Vec3::new(-300., 64., 0.)),
-        ..default()
-    });
+        })
+        .insert(Name::new("BindingsHelp"));
 
     // Help system
     commands
@@ -1645,11 +1799,7 @@ fn game_setup(
                                 ..default()
                             },
                             text: Text::from_section(
-                                initial_inventory[0]
-                                    .0
-                                    .as_ref()
-                                    .map(|item_id| database.get(*item_id).name.clone())
-                                    .unwrap_or("".to_string()),
+                                "",
                                 TextStyle {
                                     font: font.clone(),
                                     font_size: 20.0,
@@ -1680,11 +1830,7 @@ fn game_setup(
                                 ..default()
                             },
                             text: Text::from_section(
-                                initial_inventory[0]
-                                    .0
-                                    .as_ref()
-                                    .map(|item_id| database.get(*item_id).desc.clone())
-                                    .unwrap_or("".to_string()),
+                                "",
                                 TextStyle {
                                     font: font.clone(),
                                     font_size: 17.0,
@@ -1808,12 +1954,8 @@ fn game_setup(
         .insert(Name::new("board"))
         .push_children(&children[..]);
 
-    // Place sink(s) for current level
-    place_item_event_writer.send(PlaceItemEvent {
-        item_id: ItemId(0), // Sink
-        ipos: IVec2::new(0, 3),
-        orient: Orient::Top,
-    });
+    // Load first level
+    board_completed_event_writer.send(ChangeLevelEvent::First);
 }
 
 #[derive(Default)]
@@ -1938,6 +2080,7 @@ struct OutputBeam<'a> {
 }
 
 struct Item {
+    uid: String,
     name: String,
     desc: String,
     image: Handle<Image>,
@@ -1969,6 +2112,7 @@ impl Default for ItemDatabase {
 impl ItemDatabase {
     pub fn add(
         &mut self,
+        uid: &str,
         name: &str,
         desc: &str,
         image: Handle<Image>,
@@ -1978,6 +2122,7 @@ impl ItemDatabase {
     ) -> ItemId {
         let id = ItemId(self.items.len() as u32);
         self.items.push(Item {
+            uid: uid.to_string(),
             name: name.to_string(),
             desc: desc.to_string(),
             image,
@@ -1991,6 +2136,15 @@ impl ItemDatabase {
     pub fn get(&self, id: ItemId) -> &Item {
         let index = id.0 as usize;
         &self.items[index]
+    }
+
+    pub fn find(&self, name: &str) -> Option<ItemId> {
+        for (index, item) in self.items.iter().enumerate() {
+            if item.uid == name {
+                return Some(ItemId(index as u32));
+            }
+        }
+        None
     }
 
     pub fn try_get(&self, id: ItemId) -> Option<&Item> {
@@ -2168,6 +2322,9 @@ impl Inventory {
 #[derive(Component, Default, Debug, Reflect)]
 #[reflect(Component)]
 struct InventoryCursor;
+
+#[derive(Component, Default, Debug)]
+struct InventoryKeyBinding;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum BitColor {
