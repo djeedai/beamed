@@ -11,7 +11,7 @@ use bevy::{
         render_resource::{AddressMode, SamplerDescriptor},
         texture::ImageSampler,
     },
-    sprite::{Material2dPlugin, MaterialMesh2dBundle, Mesh2dHandle},
+    sprite::{Material2d, Material2dPlugin, MaterialMesh2dBundle, Mesh2dHandle},
     window::WindowId,
 };
 use bevy_kira_audio::{
@@ -35,6 +35,9 @@ impl Plugin for GamePlugin {
             .add_event::<RebuildBeamsEvent>()
             .add_event::<ChangeLevelEvent>()
             .register_type::<Cursor>()
+            .register_type::<BitColor>()
+            .register_type::<BitPattern>()
+            .register_type::<TargetBeam>()
             .init_resource::<FixupImages>()
             .init_resource::<AudioRes>()
             .init_resource::<ItemDatabase>()
@@ -451,6 +454,10 @@ fn rebuild_beams(
     }
 }
 
+#[derive(Default, Debug, Component, Reflect)]
+#[reflect(Component)]
+struct TargetBeam(pub BitPattern);
+
 #[derive(Debug, Default)]
 struct Level {
     name: String,
@@ -490,6 +497,8 @@ fn change_level(
     mut q_board: Query<&mut Board>,
     mut q_inventory: Query<(Entity, &mut Inventory, &mut Transform), Without<InventoryKeyBinding>>,
     mut q_inventory_key_binding: Query<&mut Transform, With<InventoryKeyBinding>>,
+    mut q_target_beam: Query<&mut Handle<BeamMaterial>, With<TargetBeam>>,
+    mut beam_materials: ResMut<Assets<BeamMaterial>>,
     mut rebuild_beams_event_writer: EventWriter<RebuildBeamsEvent>,
 ) {
     let new_level = if let Some(ev) = board_completed_event_reader.iter().last() {
@@ -632,6 +641,20 @@ fn change_level(
     commands
         .entity(inventory_entity)
         .push_children(&children[..]);
+
+    // Update target beam for new level
+    {
+        let mut handle = q_target_beam.single_mut();
+        trace!(
+            "Update target beam: color={:?} pattern={:x}",
+            new_level.pattern.colors[0],
+            new_level.pattern.pattern
+        );
+        *handle = beam_materials.add(BeamMaterial {
+            color: new_level.pattern.colors[0].into(), // TODO - multi-color
+            pattern: new_level.pattern.pattern as u32,
+        });
+    }
 }
 
 #[derive(Component)]
@@ -871,6 +894,54 @@ enum SplitResult {
     ShortenSelf(Option<Entity>),
 }
 
+/// Rebuild the mesh of a beam.
+fn rebuild_beam_mesh(mesh: &mut Mesh, cell_size: Vec2, start: IVec2, end: IVec2) {
+    // Find the size of the beam
+    let (vertices, uvs, mirrored) = if start.x == end.x {
+        // vertical
+        assert!(end.y != start.y);
+        let x = 6.;
+        let half_x = x / 2.;
+        let u = (end.y - start.y).abs() as f32;
+        let y = (end.y - start.y) as f32 * cell_size.y;
+        let vertices = vec![
+            [-half_x, 0., 0.],
+            [half_x, 0., 0.],
+            [-half_x, y, 0.],
+            [half_x, y, 0.],
+        ];
+        let uvs = vec![[0., 0.], [0., 1.], [u, 0.], [u, 1.]];
+        (vertices, uvs, (x < 0.) ^ (y < 0.))
+    } else {
+        // horizontal
+        assert!(end.y == start.y);
+        let x = (end.x - start.x) as f32 * cell_size.x;
+        let y = 6.;
+        let half_y = y / 2.;
+        let u = (end.x - start.x).abs() as f32;
+        let vertices = vec![
+            [0., -half_y, 0.],
+            [x, -half_y, 0.],
+            [0., half_y, 0.],
+            [x, half_y, 0.],
+        ];
+        let uvs = vec![[0., 0.], [u, 0.], [0., 1.], [u, 1.]];
+        (vertices, uvs, (x < 0.) ^ (y < 0.))
+    };
+
+    // Build the mesh
+    let normals = vec![[0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]];
+    let indices = if mirrored {
+        vec![1, 0, 2, 1, 2, 3]
+    } else {
+        vec![0, 1, 2, 2, 1, 3]
+    };
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.set_indices(Some(Indices::U32(indices)));
+}
+
 #[derive(Component, Debug)]
 struct Beam {
     pub start: IVec2,
@@ -881,52 +952,9 @@ struct Beam {
 }
 
 impl Beam {
-    /// Rebuild the mesh for the current beam
+    /// Rebuild the mesh for the current beam.
     pub fn rebuild_mesh(&self, mesh: &mut Mesh, cell_size: Vec2) {
-        // Find the size of the beam
-        let (vertices, uvs, mirrored) = if self.start.x == self.end.x {
-            // vertical
-            assert!(self.end.y != self.start.y);
-            let x = 6.;
-            let half_x = x / 2.;
-            let u = (self.end.y - self.start.y).abs() as f32;
-            let y = (self.end.y - self.start.y) as f32 * cell_size.y;
-            let vertices = vec![
-                [-half_x, 0., 0.],
-                [half_x, 0., 0.],
-                [-half_x, y, 0.],
-                [half_x, y, 0.],
-            ];
-            let uvs = vec![[0., 0.], [0., 1.], [u, 0.], [u, 1.]];
-            (vertices, uvs, (x < 0.) ^ (y < 0.))
-        } else {
-            // horizontal
-            assert!(self.end.y == self.start.y);
-            let x = (self.end.x - self.start.x) as f32 * cell_size.x;
-            let y = 6.;
-            let half_y = y / 2.;
-            let u = (self.end.x - self.start.x).abs() as f32;
-            let vertices = vec![
-                [0., -half_y, 0.],
-                [x, -half_y, 0.],
-                [0., half_y, 0.],
-                [x, half_y, 0.],
-            ];
-            let uvs = vec![[0., 0.], [u, 0.], [0., 1.], [u, 1.]];
-            (vertices, uvs, (x < 0.) ^ (y < 0.))
-        };
-
-        // Build the mesh
-        let normals = vec![[0., 0., 1.], [0., 0., 1.], [0., 0., 1.], [0., 0., 1.]];
-        let indices = if mirrored {
-            vec![1, 0, 2, 1, 2, 3]
-        } else {
-            vec![0, 1, 2, 2, 1, 3]
-        };
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.set_indices(Some(Indices::U32(indices)));
+        rebuild_beam_mesh(mesh, cell_size, self.start, self.end);
     }
 
     pub fn width(&self) -> i32 {
@@ -1698,7 +1726,7 @@ fn init_levels(
                     }
                 })
                 .collect(),
-            pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
+            pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
         },
         Level {
             name: "Halver".to_string(),
@@ -1748,7 +1776,7 @@ fn game_setup(
     mut audio_res: ResMut<AudioRes>,
     mut help_system: ResMut<HelpSystem>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut beam_materials: ResMut<Assets<BeamMaterial>>,
     mut fixup_images: ResMut<FixupImages>,
     database: Res<ItemDatabase>,
     levels: Res<LevelDatabase>,
@@ -1884,6 +1912,31 @@ fn game_setup(
             ..default()
         })
         .insert(Name::new("BindingsHelp"));
+
+    // Current level target
+    {
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
+        rebuild_beam_mesh(
+            &mut mesh,
+            board.cell_size(),
+            IVec2::new(0, 0),
+            IVec2::new(5, 0),
+        );
+        let mesh = Mesh2dHandle(meshes.add(mesh));
+        let material = beam_materials.add(BeamMaterial {
+            color: BitColor::Red.into(),
+            pattern: 0xF0F0 as u32,
+        });
+        commands
+            .spawn_bundle(MaterialMesh2dBundle {
+                mesh,
+                material,
+                transform: Transform::from_translation(Vec3::new(250., -96., 0.)),
+                ..default()
+            })
+            .insert(Name::new("TargetBeam"))
+            .insert(TargetBeam(BitPattern::default()));
+    }
 
     // Help system
     commands
@@ -2045,7 +2098,7 @@ fn game_setup(
                                 ..default()
                             },
                             text: Text::from_section(
-                                "The objective is to light the Sink tile with the correct beam pattern. To achieve this, various tiles create and manipulate beam patterns. Combine them to form the target pattern and lead it into the Sink tile to win. You can place a tile from the inventory (bottom bar) with SPACE/ENTER onto the board, or remove it from the board with DELETE.",
+                                "The objective is to light the Sink tile with the correct beam pattern. To achieve this, various tiles create and manipulate beam patterns. Combine them to form the target pattern and lead it into the Sink tile to win. You can place a tile from the inventory (bottom bar) with SPACE/ENTER onto the board, or remove it from the board with DELETE.\n\nTarget Beam:",
                                 TextStyle {
                                     font: font.clone(),
                                     font_size: 17.0,
@@ -2455,7 +2508,7 @@ struct InventoryCursor;
 #[derive(Component, Default, Debug)]
 struct InventoryKeyBinding;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Reflect)]
 enum BitColor {
     #[default]
     White,
@@ -2540,7 +2593,7 @@ impl Bit {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Reflect)]
 struct BitPattern {
     pattern: u16,
     colors: [BitColor; 16],
