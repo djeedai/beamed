@@ -555,6 +555,8 @@ fn change_level(
     info!("New Level: {}", new_level.name);
 
     let mut board = q_board.single_mut();
+    board.reset();
+
     let (inventory_entity, mut inventory, mut inventory_transform) = q_inventory.single_mut();
 
     // Clear board
@@ -1179,6 +1181,11 @@ impl Board {
     #[inline]
     pub fn completed(&self) -> bool {
         self.success
+    }
+
+    pub fn reset(&mut self) {
+        self.tiles = vec![None; self.tiles.len()];
+        self.success = false;
     }
 
     fn index(&self, ipos: IVec2) -> usize {
