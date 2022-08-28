@@ -23,7 +23,9 @@ struct FragmentInput {
 
 @fragment
 fn fragment(in: FragmentInput) -> @location(0) vec4<f32> {
-    let i = clamp(u32(in.uv.x * 16.0), 0u, 15u);
+    let u = fract(in.uv.x);
+    //return vec4<f32>(u, 0., 0., 1.);
+    let i = clamp(u32(u * 16.0), 0u, 15u);
     let bit = 1u << i;
     if ((bit & material.pattern) != 0u) {
         return material.color;

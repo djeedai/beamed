@@ -887,18 +887,22 @@ impl Beam {
         let (vertices, uvs, mirrored) = if self.start.x == self.end.x {
             // vertical
             assert!(self.end.y != self.start.y);
-            let x = 2.;
+            let x = 6.;
+            let half_x = x / 2.;
+            let u = (self.end.y - self.start.y).abs() as f32; 
             let y = (self.end.y - self.start.y) as f32 * cell_size.y;
-            let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
-            let uvs = vec![[0., 0.], [0., 1.], [x, 0.], [x, 1.]];
+            let vertices = vec![[-half_x, 0., 0.], [half_x, 0., 0.], [-half_x, y, 0.], [half_x, y, 0.]];
+            let uvs = vec![[0., 0.], [0., 1.], [u, 0.], [u, 1.]];
             (vertices, uvs, (x < 0.) ^ (y < 0.))
         } else {
             // horizontal
             assert!(self.end.y == self.start.y);
             let x = (self.end.x - self.start.x) as f32 * cell_size.x;
-            let y = 2.;
-            let vertices = vec![[0., 0., 0.], [x, 0., 0.], [0., y, 0.], [x, y, 0.]];
-            let uvs = vec![[0., 0.], [x.abs(), 0.], [0., 1.], [x.abs(), 1.]];
+            let y = 6.;
+            let half_y = y / 2.;
+            let u = (self.end.x - self.start.x).abs() as f32; 
+            let vertices = vec![[0., -half_y, 0.], [x, -half_y, 0.], [0., half_y, 0.], [x, half_y, 0.]];
+            let uvs = vec![[0., 0.], [u, 0.], [0., 1.], [u, 1.]];
             (vertices, uvs, (x < 0.) ^ (y < 0.))
         };
 
