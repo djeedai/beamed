@@ -889,9 +889,14 @@ impl Beam {
             assert!(self.end.y != self.start.y);
             let x = 6.;
             let half_x = x / 2.;
-            let u = (self.end.y - self.start.y).abs() as f32; 
+            let u = (self.end.y - self.start.y).abs() as f32;
             let y = (self.end.y - self.start.y) as f32 * cell_size.y;
-            let vertices = vec![[-half_x, 0., 0.], [half_x, 0., 0.], [-half_x, y, 0.], [half_x, y, 0.]];
+            let vertices = vec![
+                [-half_x, 0., 0.],
+                [half_x, 0., 0.],
+                [-half_x, y, 0.],
+                [half_x, y, 0.],
+            ];
             let uvs = vec![[0., 0.], [0., 1.], [u, 0.], [u, 1.]];
             (vertices, uvs, (x < 0.) ^ (y < 0.))
         } else {
@@ -900,8 +905,13 @@ impl Beam {
             let x = (self.end.x - self.start.x) as f32 * cell_size.x;
             let y = 6.;
             let half_y = y / 2.;
-            let u = (self.end.x - self.start.x).abs() as f32; 
-            let vertices = vec![[0., -half_y, 0.], [x, -half_y, 0.], [0., half_y, 0.], [x, half_y, 0.]];
+            let u = (self.end.x - self.start.x).abs() as f32;
+            let vertices = vec![
+                [0., -half_y, 0.],
+                [x, -half_y, 0.],
+                [0., half_y, 0.],
+                [x, half_y, 0.],
+            ];
             let uvs = vec![[0., 0.], [u, 0.], [0., 1.], [u, 1.]];
             (vertices, uvs, (x < 0.) ^ (y < 0.))
         };
@@ -1604,10 +1614,21 @@ fn init_database(asset_server: Res<AssetServer>, mut database: ResMut<ItemDataba
         Box::new(Filter::new(BitColor::Red)),
     ),
     (
+        "emitter_white",
+        "emitter",
+        "White Emitter",
+        "Emit a single continuous white beam.",
+        vec![],
+        vec![OutputPort {
+            port: Orient::Top.into(),
+        }],
+        Box::new(Emitter::new(BitColor::White, 1)),
+    ),
+    (
         "emitter_red",
         "emitter",
-        "Emitter",
-        "Emit a single continuous monochromatic beam.",
+        "Red Emitter",
+        "Emit a single continuous red beam.",
         vec![],
         vec![OutputPort {
             port: Orient::Top.into(),
@@ -1652,6 +1673,14 @@ fn init_levels(
         (None, 0),
     ];
 
+    let level3 = &[
+        (Some("sink_red_full".to_string()), 1),
+        (Some("emitter_white".to_string()), 1),
+        (Some("filter_red".to_string()), 1),
+        (None, 0),
+        (None, 0),
+    ];
+
     levels.levels = vec![
         Level {
             name: "Emitter and Sink".to_string(),
@@ -1687,6 +1716,23 @@ fn init_levels(
                 })
                 .collect(),
             pattern: BitPattern::simple(BitColor::Red, 0xF0F0, 1),
+        },
+        Level {
+            name: "Filter".to_string(),
+            inventory: level3
+                .iter()
+                .map(|(item_name, count)| {
+                    if let Some(item_name) = &item_name {
+                        let item_id = database
+                            .find(item_name)
+                            .expect("Failed to find item by name.");
+                        (Some(item_id), *count)
+                    } else {
+                        (None, 0)
+                    }
+                })
+                .collect(),
+            pattern: BitPattern::simple(BitColor::Red, 0xFFFF, 1),
         },
     ];
 
@@ -2769,7 +2815,91 @@ impl Default for Filter {
 
 impl Gate for Filter {
     fn tick(&self, inputs: &[InputBeam], outputs: &mut [OutputBeam]) -> TickResult {
-        TickResult::Idle // TODO
+        trace!(
+            "Filter::tick(inputs = {:?}, outputs = {:?})",
+            inputs,
+            outputs
+        );
+
+        // Only 1 input and 1 output by design
+        let input = &inputs[0];
+        let output = &mut outputs[0];
+
+        // Check if the input port is active and get its state
+        let input_state = if let Some(input_state) = &input.state {
+            input_state
+        } else if output.state.is_some() {
+            // No input, but there was an output; clear it
+            trace!("Inactive input, clearing output too.");
+            output.state = None;
+            return TickResult::OutputChanged;
+        } else {
+            // Neither input not output
+            trace!("Inactive input and output, nothing to do.");
+            return TickResult::Idle;
+        };
+
+        trace!("input_state = {:?}", input_state);
+
+        // Calculate the new output state based on the input one
+        let mut new_output_state = None;
+        trace!("FilterColor = {:?}", self.color);
+        match self.color {
+            BitColor::White | BitColor::Red => {
+                let mut ret = input_state.pattern;
+                for i in 0..16 {
+                    if ret.pattern & (1u16 << i) != 0 {
+                        ret.colors[i] = self.color;
+                    }
+                }
+                trace!(
+                    "ret = {:?} | out_orient = {:?}",
+                    ret,
+                    input_state.in_orient.reversed()
+                );
+                new_output_state = Some(OutputPortState {
+                    pattern: ret,
+                    out_orient: input_state.in_orient.reversed(),
+                });
+            }
+            _ => {
+                trace!("Filtering out non-compatible color");
+            }
+        }
+
+        // Check if state changed
+        if let Some(prev_output_state) = &output.state {
+            if let Some(new_output_state) = &new_output_state {
+                // old = Some, new = Some
+                trace!(
+                    "output: old = {:?} | new = {:?} | changed = {}",
+                    prev_output_state,
+                    new_output_state,
+                    prev_output_state == new_output_state
+                );
+                if prev_output_state == new_output_state {
+                    trace!("Idle: old == new == {:?}", prev_output_state);
+                    return TickResult::Idle;
+                }
+                output.state = Some(*new_output_state);
+                trace!("OutputChanged: output => {:?}", output.state);
+                return TickResult::OutputChanged;
+            } else {
+                // old = Some, new = None
+                output.state = None;
+                trace!("OutputChanged: output => None");
+                return TickResult::OutputChanged;
+            }
+        } else if new_output_state.is_some() {
+            // old = None, new = Some
+            output.state = new_output_state;
+            trace!("OutputChanged: output => {:?}", output.state);
+            return TickResult::OutputChanged;
+        } else {
+            // old = None, new = None
+            trace!("Idle: old == new == None");
+            return TickResult::Idle;
+        }
     }
 }
 
