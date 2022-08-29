@@ -34,6 +34,7 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugin(Material2dPlugin::<BeamMaterial>::default())
             .add_event::<ScoreEvent>()
+            .add_event::<InventorySelectItem>()
             .add_event::<PlaceItemEvent>()
             .add_event::<RemoveItemEvent>()
             .add_event::<RebuildBeamsEvent>()
@@ -49,16 +50,18 @@ impl Plugin for GamePlugin {
             .init_resource::<LevelDatabase>()
             .init_resource::<LevelManager>()
             .add_plugin(InputManagerPlugin::<PlayerAction>::default())
-            .add_system_set_to_stage(
-                CoreStage::First,
-                SystemSet::on_update(AppState::InGame).with_system(fixup_images),
-            )
+            // On Enter
             .add_system_set_to_stage(
                 CoreStage::Update,
                 SystemSet::on_enter(AppState::InGame)
                     .with_system(init_database)
                     .with_system(init_levels.after(init_database))
                     .with_system(game_setup.after(init_levels)),
+            )
+            // On Update
+            .add_system_set_to_stage(
+                CoreStage::First,
+                SystemSet::on_update(AppState::InGame).with_system(fixup_images),
             )
             .add_system_set_to_stage(
                 CoreStage::PreUpdate,
@@ -68,6 +71,7 @@ impl Plugin for GamePlugin {
                 CoreStage::Update,
                 SystemSet::on_update(AppState::InGame)
                     .with_system(update_cursor)
+                    .with_system(update_inventory.after(update_cursor))
                     .with_system(update_board.after(update_cursor))
                     .with_system(rebuild_beams.after(update_board)),
             );
@@ -88,6 +92,11 @@ enum PlayerAction {
     // Inventory
     SelectNextItem,
     SelectPrevItem,
+}
+
+#[derive(Debug)]
+struct InventorySelectItem {
+    slot_index: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -130,6 +139,7 @@ fn update_cursor(
     database: Res<ItemDatabase>,
     mut place_item_event_writer: EventWriter<PlaceItemEvent>,
     mut remove_item_event_writer: EventWriter<RemoveItemEvent>,
+    mut inventory_select_item_event_writer: EventWriter<InventorySelectItem>,
     help_system: Res<HelpSystem>,
     mut help_query: Query<&mut Text>,
 ) {
@@ -188,37 +198,10 @@ fn update_cursor(
     } else {
         false
     };
-
     if item_changed {
-        let (mut transform, mut cursor) = inventory_cursor_query.single_mut();
-        if let Some(index) = inventory.selected_index() {
-            transform.translation.x = index as f32 * board.cell_size().x;
-
-            let (maybe_item_id, item_entity) = inventory.slots()[index];
-            if let Some(item_id) = maybe_item_id {
-                let item = database.get(item_id);
-                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_title) {
-                    text.sections[0].value = item.name.clone();
-                }
-                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_desc) {
-                    text.sections[0].value = item.desc.clone();
-                }
-            } else {
-                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_title) {
-                    text.sections[0].value = String::new();
-                }
-                if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_desc) {
-                    text.sections[0].value = String::new();
-                }
-            }
-        } else {
-            if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_title) {
-                text.sections[0].value = String::new();
-            }
-            if let Ok(mut text) = help_query.get_mut(help_system.inventory_item_desc) {
-                text.sections[0].value = String::new();
-            }
-        }
+        inventory_select_item_event_writer.send(InventorySelectItem {
+            slot_index: inventory.selected_index(),
+        });
     }
 
     if input_state.just_pressed(PlayerAction::PlaceSelectedItem) {
@@ -308,6 +291,54 @@ fn update_cursor(
             }
         } else {
             warn!("Failed to find cell at pos {:?}", cursor.pos);
+        }
+    }
+}
+
+/// Update the visuals of the inventory. The selected item has already been updated by the event sender.
+fn update_inventory(
+    database: Res<ItemDatabase>,
+    help_system: Res<HelpSystem>,
+    q_board: Query<&Board>,
+    q_inventory: Query<&Inventory>,
+    mut inventory_select_item_event_reader: EventReader<InventorySelectItem>,
+    mut q_inventory_cursor: Query<(&mut Transform, &mut InventoryCursor)>,
+    mut q_help_text: Query<&mut Text>,
+) {
+    let inventory = q_inventory.single();
+
+    // Calculate newly selected slot index
+    let mut slot_index = None;
+    for ev in inventory_select_item_event_reader.iter() {
+        // Could use .last(), but if adding new modes of selection would need possibly to loop anyway...
+        slot_index = ev.slot_index;
+    }
+
+    if let Some(slot_index) = slot_index {
+        // FIXME - realistically, cannot "hide" cursor anyway...
+        let board = q_board.single();
+
+        // Move inventory cursor
+        let (mut transform, mut cursor) = q_inventory_cursor.single_mut();
+        transform.translation.x = slot_index as f32 * board.cell_size().x;
+
+        // Update help text for selected slot item
+        let (maybe_item_id, item_entity) = inventory.slots()[slot_index];
+        if let Some(item_id) = maybe_item_id {
+            let item = database.get(item_id);
+            if let Ok(mut text) = q_help_text.get_mut(help_system.inventory_item_title) {
+                text.sections[0].value = item.name.clone();
+            }
+            if let Ok(mut text) = q_help_text.get_mut(help_system.inventory_item_desc) {
+                text.sections[0].value = item.desc.clone();
+            }
+        } else {
+            if let Ok(mut text) = q_help_text.get_mut(help_system.inventory_item_title) {
+                text.sections[0].value.clear();
+            }
+            if let Ok(mut text) = q_help_text.get_mut(help_system.inventory_item_desc) {
+                text.sections[0].value.clear();
+            }
         }
     }
 }
@@ -504,6 +535,7 @@ fn change_level(
     mut q_target_beam: Query<&mut Handle<BeamMaterial>, With<TargetBeam>>,
     mut beam_materials: ResMut<Assets<BeamMaterial>>,
     mut rebuild_beams_event_writer: EventWriter<RebuildBeamsEvent>,
+    mut inventory_select_item_event_writer: EventWriter<InventorySelectItem>,
 ) {
     let new_level = if let Some(ev) = board_completed_event_reader.iter().last() {
         match ev {
@@ -645,6 +677,11 @@ fn change_level(
     commands
         .entity(inventory_entity)
         .push_children(&children[..]);
+
+    // Update inventory visuals (cursor and help texts)
+    inventory_select_item_event_writer.send(InventorySelectItem {
+        slot_index: if slot_count > 0 { Some(0) } else { None },
+    });
 
     // Update target beam for new level
     {
